@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>台股即時行情</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=12">
 </head>
 <body>
   <div class="page">
@@ -29,38 +29,40 @@
       </div>
     </section>
 
-    <section class="status-bar">
-      <div class="status-main">
-        <span id="status-text">準備載入...</span>
-        <span id="countdown-wrap" class="countdown-wrap">
-          下次更新：
-          <strong id="countdown">{{ refresh_seconds }}</strong>
-          秒
-        </span>
-      </div>
-      <label class="color-toggle" for="invert-colors-toggle">
-        <span class="color-toggle-label">台股配色</span>
-        <input type="checkbox" id="invert-colors-toggle" checked>
-        <span class="toggle-track" aria-hidden="true">
-          <span class="toggle-thumb"></span>
-        </span>
-      </label>
-    </section>
-
     <main id="stock-panel" class="stock-panel hidden">
-      <div class="stock-header">
-        <div>
-          <p class="stock-code" id="display-code"></p>
-          <h2 id="display-name"></h2>
-          <p class="stock-fullname" id="display-fullname"></p>
-        </div>
-        <p class="update-time" id="display-time"></p>
-      </div>
+      <div class="stock-top">
+        <div class="stock-main">
+          <div class="stock-header">
+            <p class="stock-code" id="display-code"></p>
+            <h2 id="display-name"></h2>
+            <p class="stock-fullname" id="display-fullname"></p>
+          </div>
 
-      <div class="price-card">
-        <p class="price-label" id="price-label">最新成交價</p>
-        <p class="price-value" id="display-price"></p>
-        <p class="price-change" id="display-change"></p>
+          <div class="price-card price-card-compact">
+            <p class="price-label" id="price-label">最新成交價</p>
+            <p class="price-value" id="display-price"></p>
+            <p class="price-change" id="display-change"></p>
+          </div>
+        </div>
+
+        <aside class="stock-sidebar">
+          <p class="update-time" id="display-time"></p>
+          <div class="stock-status">
+            <span id="status-text">準備載入...</span>
+            <span id="countdown-wrap" class="countdown-wrap hidden">
+              下次更新：
+              <strong id="countdown">{{ refresh_seconds }}</strong>
+              秒
+            </span>
+            <label class="color-toggle" for="invert-colors-toggle">
+              <span class="color-toggle-label">台股配色</span>
+              <input type="checkbox" id="invert-colors-toggle" checked>
+              <span class="toggle-track" aria-hidden="true">
+                <span class="toggle-thumb"></span>
+              </span>
+            </label>
+          </div>
+        </aside>
       </div>
 
       <div class="chart-order-row">
@@ -68,6 +70,24 @@
           <div class="chart-header">
             <h3>今日走勢 (09:00 – 13:30)</h3>
             <p id="chart-prev-close" class="chart-meta"></p>
+          </div>
+          <div class="chart-legend" id="chart-legend">
+            <span class="chart-legend-item hidden" id="chart-legend-trade">
+              <span class="chart-legend-line chart-legend-line-trade" aria-hidden="true"></span>
+              成交價
+            </span>
+            <!-- <span class="chart-legend-item hidden" id="chart-legend-up">
+              <span class="chart-legend-line chart-legend-line-up" aria-hidden="true"></span>
+              高於昨收
+            </span>
+            <span class="chart-legend-item hidden" id="chart-legend-down">
+              <span class="chart-legend-line chart-legend-line-down" aria-hidden="true"></span>
+              低於昨收
+            </span> -->
+            <span class="chart-legend-item hidden" id="chart-legend-prev">
+              <span class="chart-legend-line chart-legend-line-prev" aria-hidden="true"></span>
+              昨收
+            </span>
           </div>
           <div class="chart-wrap">
             <canvas id="price-chart"></canvas>
@@ -77,25 +97,10 @@
 
         <section class="order-book">
           <h3>五檔報價</h3>
-          <div class="order-book-grid">
-            <table>
-              <thead>
-                <tr>
-                  <th>買價</th>
-                  <th>買量</th>
-                </tr>
-              </thead>
-              <tbody id="bid-rows"></tbody>
-            </table>
-            <table>
-              <thead>
-                <tr>
-                  <th>賣價</th>
-                  <th>賣量</th>
-                </tr>
-              </thead>
-              <tbody id="ask-rows"></tbody>
-            </table>
+          <div class="order-book-layout" id="order-book-layout">
+            <span class="order-book-head-side" aria-hidden="true"></span>
+            <span class="order-book-head-price">價格</span>
+            <span class="order-book-head-volume">量</span>
           </div>
         </section>
       </div>
@@ -134,6 +139,6 @@
       refreshSeconds: {{ refresh_seconds }},
     };
   </script>
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=12"></script>
 </body>
 </html>

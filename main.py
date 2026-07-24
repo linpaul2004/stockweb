@@ -1,4 +1,6 @@
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, render_template, request
 import twstock
@@ -10,6 +12,7 @@ app.config["JSON_AS_ASCII"] = False
 
 DEFAULT_STOCK = "0050"
 REFRESH_SECONDS = 3
+TZ_TAIPEI = ZoneInfo("Asia/Taipei")
 
 
 @app.route("/")
@@ -36,6 +39,12 @@ def get_stock():
     prev_close = get_previous_close_for_code(code)
     if prev_close is not None:
         data["prev_close"] = prev_close
+
+    timestamp = data.get("timestamp")
+    if timestamp:
+        data["info"]["time"] = datetime.fromtimestamp(timestamp, TZ_TAIPEI).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
 
     return jsonify(data)
 

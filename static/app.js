@@ -9,6 +9,11 @@ const stockPanel = document.getElementById("stock-panel");
 const errorPanel = document.getElementById("error-panel");
 const chartMessage = document.getElementById("chart-message");
 const chartPrevClose = document.getElementById("chart-prev-close");
+const chartLegend = document.getElementById("chart-legend");
+const chartLegendTrade = document.getElementById("chart-legend-trade");
+const chartLegendUp = document.getElementById("chart-legend-up");
+const chartLegendDown = document.getElementById("chart-legend-down");
+const chartLegendPrev = document.getElementById("chart-legend-prev");
 const priceLabelEl = document.getElementById("price-label");
 const invertColorsToggle = document.getElementById("invert-colors-toggle");
 
@@ -21,6 +26,7 @@ let priceChart = null;
 let lastLatestPrice = null;
 let lastTradeVolume = null;
 let lastPrevClose = null;
+let lastChartData = null;
 let invertColors = localStorage.getItem("invertColors") !== "false";
 
 const CHART_REFRESH_SECONDS = 30;
@@ -117,6 +123,88 @@ function formatNumber(value) {
   return number.toLocaleString("zh-TW");
 }
 
+function getThemeColor(cssVar) {
+  return getComputedStyle(document.body).getPropertyValue(cssVar).trim();
+}
+
+function colorWithAlpha(color, alpha) {
+  if (!color) {
+    return `rgba(148, 163, 184, ${alpha})`;
+  }
+
+  if (color.startsWith("#")) {
+    const hex = color.slice(1);
+    const full =
+      hex.length === 3 ? hex.split("").map((char) => char + char).join("") : hex;
+    const red = Number.parseInt(full.slice(0, 2), 16);
+    const green = Number.parseInt(full.slice(2, 4), 16);
+    const blue = Number.parseInt(full.slice(4, 6), 16);
+    return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+  }
+
+  return color;
+}
+
+function getChartTrendColors(latestPrice, prevClose) {
+  const changeClass =
+    hasValue(prevClose) && hasValue(latestPrice)
+      ? getChangeClass(latestPrice, prevClose)
+      : "flat";
+  const cssVar =
+    changeClass === "up" ? "--up" : changeClass === "down" ? "--down" : "--flat";
+  const borderColor = getThemeColor(cssVar) || "#4f8cff";
+
+  return {
+    borderColor,
+    backgroundColor: colorWithAlpha(borderColor, 0.12),
+  };
+}
+
+function buildPriceSegmentStyle(prevClose) {
+  return {
+    borderColor: (ctx) => {
+      const start = ctx.p0?.parsed?.y;
+      const end = ctx.p1?.parsed?.y;
+      if (start == null || end == null) {
+        return undefined;
+      }
+
+      const segmentPrice = (start + end) / 2;
+      return getChartTrendColors(segmentPrice, prevClose).borderColor;
+    },
+    backgroundColor: (ctx) => {
+      const start = ctx.p0?.parsed?.y;
+      const end = ctx.p1?.parsed?.y;
+      if (start == null || end == null) {
+        return undefined;
+      }
+
+      const segmentPrice = (start + end) / 2;
+      return getChartTrendColors(segmentPrice, prevClose).backgroundColor;
+    },
+  };
+}
+
+function updateChartLegendColors() {
+  const upColor = getThemeColor("--up");
+  const downColor = getThemeColor("--down");
+  const flatColor = getThemeColor("--flat");
+
+  const legendTrade = document.querySelector(".chart-legend-line-trade");
+  const legendUp = document.querySelector(".chart-legend-line-up");
+  const legendDown = document.querySelector(".chart-legend-line-down");
+
+  if (legendTrade) {
+    legendTrade.style.borderTopColor = flatColor;
+  }
+  if (legendUp) {
+    legendUp.style.borderTopColor = upColor;
+  }
+  if (legendDown) {
+    legendDown.style.borderTopColor = downColor;
+  }
+}
+
 function getChangeClass(latest, reference) {
   const latestNum = Number(latest);
   const refNum = Number(reference);
@@ -142,21 +230,157 @@ function setComparedStatValue(elementId, value) {
   el.className = `stat-value ${changeClass}`;
 }
 
-function renderOrderBookRows(containerId, prices, volumes, priceClass) {
-  const container = document.getElementById(containerId);
-  container.innerHTML = "";
+function buildOrderBookLevels(prices, volumes, side) {
+  const levels = [];
+  const maxRows = Math.max(prices?.length || 0, volumes?.length || 0);
 
-  const maxRows = Math.max(prices?.length || 0, volumes?.length || 0, 5);
   for (let i = 0; i < maxRows; i += 1) {
-    const row = document.createElement("tr");
-    const price = prices?.[i] ?? "—";
-    const volume = volumes?.[i] ?? "—";
+    const price = prices?.[i];
+    const volume = volumes?.[i];
+    if (!hasValue(price)) {
+      continue;
+    }
 
-    row.innerHTML = `
-      <td class="${priceClass}">${formatNumber(price)}</td>
-      <td>${formatNumber(volume)}</td>
+    levels.push({
+      side,
+      price: Number(price),
+      volume,
+    });
+  }
+
+  return levels;
+}
+
+function getOrderBookLayout() {
+  let layout = document.getElementById("order-book-layout");
+  if (layout) {
+    return layout;
+  }
+
+  const section = document.querySelector(".order-book");
+  if (!section) {
+    return null;
+  }
+
+  layout = document.createElement("div");
+  layout.className = "order-book-layout";
+  layout.id = "order-book-layout";
+  layout.innerHTML = `
+    <span class="order-book-head-side" aria-hidden="true"></span>
+    <span class="order-book-head-price">價格</span>
+    <span class="order-book-head-volume">量</span>
+  `;
+
+  const legacyTable = section.querySelector("table");
+  if (legacyTable) {
+    legacyTable.replaceWith(layout);
+    return layout;
+  }
+
+  const legacyBody = section.querySelector("#order-book-rows");
+  if (legacyBody) {
+    legacyBody.replaceWith(layout);
+    return layout;
+  }
+
+  section.appendChild(layout);
+  return layout;
+}
+
+function clearOrderBookData(layout) {
+  while (layout.children.length > 3) {
+    layout.removeChild(layout.lastChild);
+  }
+}
+
+function appendOrderBookLevel(layout, level, row) {
+  const priceClass =
+    hasValue(lastPrevClose) ? getChangeClass(level.price, lastPrevClose) : "flat";
+
+  const price = document.createElement("div");
+  price.className = `order-price ${priceClass}`;
+  price.style.gridRow = String(row);
+  price.style.gridColumn = "2";
+  price.textContent = formatNumber(level.price);
+
+  const volume = document.createElement("div");
+  volume.className = "order-volume";
+  volume.style.gridRow = String(row);
+  volume.style.gridColumn = "3";
+  volume.textContent = formatNumber(level.volume);
+
+  layout.appendChild(price);
+  layout.appendChild(volume);
+}
+
+function appendOrderBookMarker(layout, side, row, span) {
+  const marker = document.createElement("div");
+  const isAsk = side === "ask";
+  marker.className = `order-side-marker ${isAsk ? "order-side-marker-ask" : "order-side-marker-bid"}`;
+  marker.style.gridRow = `${row} / ${row + span}`;
+  marker.style.gridColumn = "1";
+  marker.innerHTML = isAsk
+    ? `
+      <div class="order-side-marker-inner">
+        <span class="order-side-arrow" aria-hidden="true">↑</span>
+        <span class="order-side-label">賣價</span>
+      </div>
+    `
+    : `
+      <div class="order-side-marker-inner">
+        <span class="order-side-label">買價</span>
+        <span class="order-side-arrow" aria-hidden="true">↓</span>
+      </div>
     `;
-    container.appendChild(row);
+  layout.appendChild(marker);
+}
+
+function renderOrderBook(realtime) {
+  const layout = getOrderBookLayout();
+  if (!layout) {
+    return;
+  }
+
+  clearOrderBookData(layout);
+
+  const askLevels = buildOrderBookLevels(
+    realtime.best_ask_price,
+    realtime.best_ask_volume,
+    "ask"
+  ).sort((a, b) => b.price - a.price);
+
+  const bidLevels = buildOrderBookLevels(
+    realtime.best_bid_price,
+    realtime.best_bid_volume,
+    "bid"
+  ).sort((a, b) => b.price - a.price);
+
+  if (!askLevels.length && !bidLevels.length) {
+    const empty = document.createElement("div");
+    empty.className = "order-book-empty";
+    empty.style.gridRow = "2";
+    empty.style.gridColumn = "1 / -1";
+    empty.textContent = "—";
+    layout.appendChild(empty);
+    return;
+  }
+
+  let currentRow = 2;
+
+  if (askLevels.length) {
+    appendOrderBookMarker(layout, "ask", currentRow, askLevels.length);
+    askLevels.forEach((level) => {
+      appendOrderBookLevel(layout, level, currentRow);
+      currentRow += 1;
+    });
+  }
+
+  if (bidLevels.length) {
+    appendOrderBookMarker(layout, "bid", currentRow, bidLevels.length);
+    bidLevels.forEach((level) => {
+      appendOrderBookLevel(layout, level, currentRow);
+      currentRow += 1;
+    });
   }
 }
 
@@ -204,18 +428,7 @@ function renderStock(data) {
 
   document.getElementById("display-accum-volume").textContent = formatNumber(realtime.accumulate_trade_volume);
 
-  renderOrderBookRows(
-    "bid-rows",
-    realtime.best_bid_price,
-    realtime.best_bid_volume,
-    "up"
-  );
-  renderOrderBookRows(
-    "ask-rows",
-    realtime.best_ask_price,
-    realtime.best_ask_volume,
-    "down"
-  );
+  renderOrderBook(realtime);
 
   stockPanel.classList.remove("hidden");
   errorPanel.classList.add("hidden");
@@ -228,6 +441,10 @@ function initColorToggle() {
     invertColors = invertColorsToggle.checked;
     localStorage.setItem("invertColors", String(invertColors));
     applyColorMode();
+    refreshPriceDisplay();
+    if (lastChartData) {
+      renderChart(lastChartData);
+    }
   });
 }
 
@@ -243,23 +460,31 @@ function setChartMessage(message) {
 }
 
 function renderChart(data) {
+  lastChartData = data;
   const points = data.points || [];
   const prevClose = data.prev_close;
+  const hasPrevClose = prevClose !== null && prevClose !== undefined;
 
-  chartPrevClose.textContent =
-    prevClose !== null && prevClose !== undefined
-      ? `昨收 ${Number(prevClose).toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
-      : "";
+  chartPrevClose.textContent = hasPrevClose
+    ? `昨收 ${Number(prevClose).toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
+    : "";
 
   if (!points.length) {
     if (priceChart) {
       priceChart.destroy();
       priceChart = null;
     }
+    chartLegend.classList.add("hidden");
     setChartMessage(data.message || "尚無當日走勢資料");
     return;
   }
 
+  chartLegend.classList.remove("hidden");
+  chartLegendTrade?.classList.toggle("hidden", hasPrevClose);
+  chartLegendUp?.classList.toggle("hidden", !hasPrevClose);
+  chartLegendDown?.classList.toggle("hidden", !hasPrevClose);
+  chartLegendPrev?.classList.toggle("hidden", !hasPrevClose);
+  updateChartLegendColors();
   setChartMessage("");
 
   const labels = points.map((point) => point.time);
@@ -271,12 +496,15 @@ function renderChart(data) {
     priceChart.destroy();
   }
 
+  const fallbackColors = getChartTrendColors(prices[prices.length - 1], prevClose);
+
   const datasets = [
     {
       label: "成交價",
       data: prices,
-      borderColor: "#4f8cff",
-      backgroundColor: "rgba(79, 140, 255, 0.12)",
+      borderColor: fallbackColors.borderColor,
+      backgroundColor: fallbackColors.backgroundColor,
+      segment: hasPrevClose ? buildPriceSegmentStyle(prevClose) : undefined,
       fill: true,
       tension: 0.2,
       pointRadius: 0,
@@ -284,7 +512,7 @@ function renderChart(data) {
     },
   ];
 
-  if (prevClose !== null && prevClose !== undefined) {
+  if (hasPrevClose) {
     datasets.push({
       label: "昨收",
       data: labels.map(() => prevClose),
@@ -305,15 +533,16 @@ function renderChart(data) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      layout: {
+        padding: 0,
+      },
       interaction: {
         mode: "index",
         intersect: false,
       },
       plugins: {
         legend: {
-          labels: {
-            color: "#e8edf7",
-          },
+          display: false,
         },
       },
       scales: {
@@ -372,6 +601,7 @@ async function fetchChart(code) {
       priceChart = null;
     }
     chartPrevClose.textContent = "";
+    chartLegend.classList.add("hidden");
     setChartMessage(error.message || "走勢圖載入失敗");
   }
 }
@@ -456,6 +686,10 @@ async function fetchStock(code, manual = true) {
   if (stockChanged) {
     resetStockDisplayCache();
   }
+
+  stockPanel.classList.remove("hidden");
+  errorPanel.classList.add("hidden");
+  document.getElementById("display-code").textContent = normalizedCode;
 
   statusText.textContent = manual ? `正在查詢 ${normalizedCode}...` : `正在更新 ${normalizedCode}...`;
 
