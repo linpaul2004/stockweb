@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>台股即時行情</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="page">
+    <header class="header">
+      <h1>台股即時行情</h1>
+      <p class="subtitle">即時資料：twstock · 走勢圖：yfinance</p>
+    </header>
+
+    <section class="search-panel">
+      <label for="stock-code">股票代號</label>
+      <div class="search-row">
+        <input
+          id="stock-code"
+          type="text"
+          inputmode="numeric"
+          maxlength="6"
+          value="{{ default_stock }}"
+          placeholder="例如 0050"
+          autocomplete="off"
+        >
+        <button id="search-btn" type="button">查詢</button>
+      </div>
+    </section>
+
+    <section class="status-bar">
+      <div class="status-main">
+        <span id="status-text">準備載入...</span>
+        <span id="countdown-wrap" class="countdown-wrap">
+          下次更新：
+          <strong id="countdown">{{ refresh_seconds }}</strong>
+          秒
+        </span>
+      </div>
+      <label class="color-toggle" for="invert-colors-toggle">
+        <span class="color-toggle-label">台股配色</span>
+        <input type="checkbox" id="invert-colors-toggle" checked>
+        <span class="toggle-track" aria-hidden="true">
+          <span class="toggle-thumb"></span>
+        </span>
+      </label>
+    </section>
+
+    <main id="stock-panel" class="stock-panel hidden">
+      <div class="stock-header">
+        <div>
+          <p class="stock-code" id="display-code"></p>
+          <h2 id="display-name"></h2>
+          <p class="stock-fullname" id="display-fullname"></p>
+        </div>
+        <p class="update-time" id="display-time"></p>
+      </div>
+
+      <div class="price-card">
+        <p class="price-label" id="price-label">最新成交價</p>
+        <p class="price-value" id="display-price"></p>
+        <p class="price-change" id="display-change"></p>
+      </div>
+
+      <div class="chart-order-row">
+        <section class="chart-section">
+          <div class="chart-header">
+            <h3>今日走勢 (09:00 – 13:30)</h3>
+            <p id="chart-prev-close" class="chart-meta"></p>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="price-chart"></canvas>
+          </div>
+          <p id="chart-message" class="chart-message hidden"></p>
+        </section>
+
+        <section class="order-book">
+          <h3>五檔報價</h3>
+          <div class="order-book-grid">
+            <table>
+              <thead>
+                <tr>
+                  <th>買價</th>
+                  <th>買量</th>
+                </tr>
+              </thead>
+              <tbody id="bid-rows"></tbody>
+            </table>
+            <table>
+              <thead>
+                <tr>
+                  <th>賣價</th>
+                  <th>賣量</th>
+                </tr>
+              </thead>
+              <tbody id="ask-rows"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <span class="stat-label">開盤</span>
+          <span class="stat-value" id="display-open">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">最高</span>
+          <span class="stat-value" id="display-high">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">最低</span>
+          <span class="stat-value" id="display-low">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">單筆成交量</span>
+          <span class="stat-value" id="display-trade-volume"></span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">累計成交量</span>
+          <span class="stat-value" id="display-accum-volume">—</span>
+        </div>
+      </div>
+    </main>
+
+    <div id="error-panel" class="error-panel hidden"></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+  <script>
+    window.STOCK_CONFIG = {
+      defaultStock: "{{ default_stock }}",
+      refreshSeconds: {{ refresh_seconds }},
+    };
+  </script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
