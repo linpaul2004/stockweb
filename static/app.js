@@ -459,6 +459,52 @@ function setChartMessage(message) {
   chartMessage.classList.remove("hidden");
 }
 
+function buildFixedTimeAxis(points) {
+  const labels = [];
+  const prices = [];
+  const pointMap = new Map(points.map((point) => [point.time, point.price]));
+
+  for (let minute = 9 * 60; minute <= 13 * 60 + 25; minute += 1) {
+    const hour = String(Math.floor(minute / 60)).padStart(2, "0");
+    const minutePart = String(minute % 60).padStart(2, "0");
+    const label = `${hour}:${minutePart}`;
+    labels.push(label);
+    prices.push(pointMap.has(label) ? pointMap.get(label) : null);
+  }
+
+  return { labels, prices };
+}
+
+function getNearestAvailablePrice(values, index) {
+  if (hasValue(values[index])) {
+    return values[index];
+  }
+
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    if (hasValue(values[cursor])) {
+      return values[cursor];
+    }
+  }
+
+  for (let cursor = index + 1; cursor < values.length; cursor += 1) {
+    if (hasValue(values[cursor])) {
+      return values[cursor];
+    }
+  }
+
+  return null;
+}
+
+function getLastAvailablePrice(values) {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    if (hasValue(values[index])) {
+      return values[index];
+    }
+  }
+
+  return null;
+}
+
 function renderChart(data) {
   lastChartData = data;
   const points = data.points || [];
@@ -487,8 +533,7 @@ function renderChart(data) {
   updateChartLegendColors();
   setChartMessage("");
 
-  const labels = points.map((point) => point.time);
-  const prices = points.map((point) => point.price);
+  const { labels, prices } = buildFixedTimeAxis(points);
   const canvas = document.getElementById("price-chart");
   const ctx = canvas.getContext("2d");
 
@@ -496,7 +541,7 @@ function renderChart(data) {
     priceChart.destroy();
   }
 
-  const fallbackColors = getChartTrendColors(prices[prices.length - 1], prevClose);
+  const fallbackColors = getChartTrendColors(getLastAvailablePrice(prices), prevClose);
 
   const datasets = [
     {
@@ -533,6 +578,7 @@ function renderChart(data) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      spanGaps: true,
       layout: {
         padding: 0,
       },
@@ -543,6 +589,37 @@ function renderChart(data) {
       plugins: {
         legend: {
           display: false,
+        },
+        tooltip: {
+          enabled: true,
+          callbacks: {
+            label: (context) => {
+              const datasetLabel = context.dataset?.label || "價格";
+              const values = context.chart?.data?.datasets?.[context.datasetIndex]?.data || [];
+              const rawValue = context.parsed?.y;
+
+              if (datasetLabel === "昨收") {
+                return hasValue(rawValue)
+                  ? `昨收 ${Number(rawValue).toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
+                  : null;
+              }
+
+              const resolvedValue = (() => {
+                if (hasValue(rawValue)) {
+                  return rawValue;
+                }
+
+                const nearestValue = getNearestAvailablePrice(values, context.dataIndex);
+                return hasValue(nearestValue) ? nearestValue : null;
+              })();
+
+              if (!hasValue(resolvedValue)) {
+                return null;
+              }
+
+              return `成交價 ${Number(resolvedValue).toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+            },
+          },
         },
       },
       scales: {
@@ -691,6 +768,11 @@ async function fetchStock(code, manual = true) {
   errorPanel.classList.add("hidden");
   document.getElementById("display-code").textContent = normalizedCode;
 
+  document.getElementById("display-trade-volume").textContent = "—";
+  document.getElementById("display-accum-volume").textContent = "—";
+  document.getElementById("display-open").textContent = "—";
+  document.getElementById("display-high").textContent = "—";
+  document.getElementById("display-low").textContent = "—";
   statusText.textContent = manual ? `正在查詢 ${normalizedCode}...` : `正在更新 ${normalizedCode}...`;
 
   try {
