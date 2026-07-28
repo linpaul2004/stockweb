@@ -418,7 +418,7 @@ function renderStock(data) {
     changeEl.className = "price-change flat";
   }
 
-  document.getElementById("display-open").textContent = formatNumber(realtime.open);
+  setComparedStatValue("display-open", realtime.open);
   setComparedStatValue("display-high", realtime.high);
   setComparedStatValue("display-low", realtime.low);
 
@@ -475,24 +475,35 @@ function buildFixedTimeAxis(points) {
   return { labels, prices };
 }
 
-function getNearestAvailablePrice(values, index) {
+function getNearestAvailableIndex(values, index) {
   if (hasValue(values[index])) {
-    return values[index];
+    return index;
   }
 
-  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    if (hasValue(values[cursor])) {
-      return values[cursor];
+  let nearestIndex = -1;
+  let nearestDistance = Infinity;
+
+  for (let cursor = 0; cursor < values.length; cursor += 1) {
+    if (!hasValue(values[cursor])) {
+      continue;
+    }
+
+    const distance = Math.abs(cursor - index);
+    if (
+      distance < nearestDistance ||
+      (distance === nearestDistance && cursor < nearestIndex)
+    ) {
+      nearestDistance = distance;
+      nearestIndex = cursor;
     }
   }
 
-  for (let cursor = index + 1; cursor < values.length; cursor += 1) {
-    if (hasValue(values[cursor])) {
-      return values[cursor];
-    }
-  }
+  return nearestIndex;
+}
 
-  return null;
+function getNearestAvailablePrice(values, index) {
+  const nearestIndex = getNearestAvailableIndex(values, index);
+  return nearestIndex >= 0 ? values[nearestIndex] : null;
 }
 
 function getLastAvailablePrice(values) {
@@ -504,6 +515,149 @@ function getLastAvailablePrice(values) {
 
   return null;
 }
+
+function getTradeDatasetIndex(chart) {
+  return chart.data.datasets.findIndex((dataset) => dataset.label === "成交價");
+}
+
+function getHoveredIndex(chart, xPixel) {
+  const xScale = chart.scales.x;
+  if (!xScale) {
+    return -1;
+  }
+
+  const rawIndex = xScale.getValueForPixel(xPixel);
+  if (!Number.isFinite(rawIndex)) {
+    return -1;
+  }
+
+  return Math.max(0, Math.min(chart.data.labels.length - 1, Math.round(rawIndex)));
+}
+
+function buildSnappedActiveElements(chart, snappedIndex) {
+  const activeElements = [];
+  const tradeDatasetIndex = getTradeDatasetIndex(chart);
+  if (tradeDatasetIndex >= 0) {
+    activeElements.push({ datasetIndex: tradeDatasetIndex, index: snappedIndex });
+  }
+
+  const prevCloseDatasetIndex = chart.data.datasets.findIndex(
+    (dataset) => dataset.label === "昨收"
+  );
+  if (prevCloseDatasetIndex >= 0) {
+    activeElements.push({ datasetIndex: prevCloseDatasetIndex, index: snappedIndex });
+  }
+
+  return activeElements;
+}
+
+function resolveTooltipTradePrice(context) {
+  const values = context.chart?.data?.datasets?.[context.datasetIndex]?.data || [];
+  const rawValue = context.parsed?.y;
+  return hasValue(rawValue) ? rawValue : getNearestAvailablePrice(values, context.dataIndex);
+}
+
+const chartSnapInteractionPlugin = {
+  id: "chartSnapInteraction",
+  beforeEvent(chart, args) {
+    const { event, inChartArea } = args;
+    const leaveEvents = new Set(["mouseout", "pointerleave", "pointerout"]);
+
+    if (!inChartArea || leaveEvents.has(event.type)) {
+      chart.$snappedIndex = undefined;
+      return;
+    }
+
+    if (event.type !== "mousemove" && event.type !== "pointermove") {
+      return;
+    }
+
+    const tradeDatasetIndex = getTradeDatasetIndex(chart);
+    if (tradeDatasetIndex < 0) {
+      return;
+    }
+
+    const values = chart.data.datasets[tradeDatasetIndex].data;
+    const hoveredIndex = getHoveredIndex(chart, event.x);
+    chart.$snappedIndex = getNearestAvailableIndex(values, hoveredIndex);
+  },
+  afterEvent(chart, args) {
+    const { event, inChartArea } = args;
+    const leaveEvents = new Set(["mouseout", "pointerleave", "pointerout"]);
+
+    if (!inChartArea || leaveEvents.has(event.type)) {
+      chart.$snappedIndex = undefined;
+      chart.setActiveElements([]);
+      chart.tooltip?.setActiveElements([], { x: event.x, y: event.y });
+      args.changed = true;
+      return;
+    }
+
+    if (event.type !== "mousemove" && event.type !== "pointermove") {
+      return;
+    }
+
+    const tradeDatasetIndex = getTradeDatasetIndex(chart);
+    if (tradeDatasetIndex < 0) {
+      return;
+    }
+
+    const values = chart.data.datasets[tradeDatasetIndex].data;
+    const hoveredIndex = getHoveredIndex(chart, event.x);
+    const snappedIndex = getNearestAvailableIndex(values, hoveredIndex);
+    if (snappedIndex < 0) {
+      chart.$snappedIndex = undefined;
+      chart.setActiveElements([]);
+      chart.tooltip?.setActiveElements([], { x: event.x, y: event.y });
+      args.changed = true;
+      return;
+    }
+
+    chart.$snappedIndex = snappedIndex;
+    const activeElements = buildSnappedActiveElements(chart, snappedIndex);
+    chart.setActiveElements(activeElements);
+    chart.tooltip?.setActiveElements(activeElements, { x: event.x, y: event.y });
+    args.changed = true;
+  },
+  afterDraw(chart) {
+    const snappedIndex = chart.$snappedIndex;
+    if (snappedIndex === undefined) {
+      return;
+    }
+
+    const tradeDatasetIndex = getTradeDatasetIndex(chart);
+    if (tradeDatasetIndex < 0) {
+      return;
+    }
+
+    const element = chart.getDatasetMeta(tradeDatasetIndex).data[snappedIndex];
+    if (!element || element.x == null || element.y == null) {
+      return;
+    }
+
+    const { ctx, chartArea } = chart;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(element.x, chartArea.top);
+    ctx.lineTo(element.x, chartArea.bottom);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.45)";
+    ctx.setLineDash([4, 4]);
+    ctx.stroke();
+
+    const price = chart.data.datasets[tradeDatasetIndex].data[snappedIndex];
+    const hoverColor = getChartTrendColors(price, chart.$prevClose).borderColor;
+    ctx.beginPath();
+    ctx.arc(element.x, element.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = hoverColor;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#0f172a";
+    ctx.setLineDash([]);
+    ctx.stroke();
+    ctx.restore();
+  },
+};
 
 function renderChart(data) {
   lastChartData = data;
@@ -534,14 +688,49 @@ function renderChart(data) {
   setChartMessage("");
 
   const { labels, prices } = buildFixedTimeAxis(points);
-  const canvas = document.getElementById("price-chart");
-  const ctx = canvas.getContext("2d");
+  const fallbackColors = getChartTrendColors(getLastAvailablePrice(prices), prevClose);
 
   if (priceChart) {
-    priceChart.destroy();
+    priceChart.data.labels = labels;
+    priceChart.data.datasets[0].data = prices;
+    priceChart.data.datasets[0].borderColor = fallbackColors.borderColor;
+    priceChart.data.datasets[0].backgroundColor = fallbackColors.backgroundColor;
+    priceChart.data.datasets[0].segment = hasPrevClose ? buildPriceSegmentStyle(prevClose) : undefined;
+
+    const prevDataset = priceChart.data.datasets.find((dataset) => dataset.label === "昨收");
+    if (hasPrevClose) {
+      const prevCloseData = labels.map(() => prevClose);
+      if (prevDataset) {
+        prevDataset.data = prevCloseData;
+      } else {
+        priceChart.data.datasets.push({
+          label: "昨收",
+          data: prevCloseData,
+          borderColor: "#94a3b8",
+          borderDash: [6, 4],
+          pointRadius: 0,
+          borderWidth: 1.5,
+          fill: false,
+        });
+      }
+    } else if (prevDataset) {
+      priceChart.data.datasets = priceChart.data.datasets.filter(
+        (dataset) => dataset.label !== "昨收"
+      );
+    }
+
+    if (data.y_min !== undefined && data.y_max !== undefined) {
+      priceChart.options.scales.y.min = data.y_min;
+      priceChart.options.scales.y.max = data.y_max;
+    }
+
+    priceChart.$prevClose = prevClose;
+    priceChart.update("none");
+    return;
   }
 
-  const fallbackColors = getChartTrendColors(getLastAvailablePrice(prices), prevClose);
+  const canvas = document.getElementById("price-chart");
+  const ctx = canvas.getContext("2d");
 
   const datasets = [
     {
@@ -553,6 +742,7 @@ function renderChart(data) {
       fill: true,
       tension: 0.2,
       pointRadius: 0,
+      pointHoverRadius: 0,
       borderWidth: 2,
     },
   ];
@@ -571,6 +761,7 @@ function renderChart(data) {
 
   priceChart = new Chart(ctx, {
     type: "line",
+    plugins: [chartSnapInteractionPlugin],
     data: {
       labels,
       datasets,
@@ -578,11 +769,17 @@ function renderChart(data) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: false,
       spanGaps: true,
       layout: {
         padding: 0,
       },
       interaction: {
+        mode: "index",
+        intersect: false,
+        includeInvisible: true,
+      },
+      hover: {
         mode: "index",
         intersect: false,
       },
@@ -592,10 +789,46 @@ function renderChart(data) {
         },
         tooltip: {
           enabled: true,
+          filter: (tooltipItem) => {
+            const datasetLabel = tooltipItem.dataset?.label;
+            if (datasetLabel === "昨收") {
+              return hasValue(tooltipItem.parsed?.y);
+            }
+
+            if (datasetLabel === "成交價") {
+              const values = tooltipItem.chart?.data?.datasets?.[tooltipItem.datasetIndex]?.data || [];
+              return getNearestAvailableIndex(values, tooltipItem.dataIndex) >= 0;
+            }
+
+            return hasValue(tooltipItem.parsed?.y);
+          },
           callbacks: {
+            title: (tooltipItems) => {
+              const context = tooltipItems[0];
+              if (!context) {
+                return "";
+              }
+
+              const labels = context.chart?.data?.labels || [];
+              const tradeDataset = context.chart?.data?.datasets?.find(
+                (dataset) => dataset.label === "成交價"
+              );
+              if (!tradeDataset) {
+                return labels[context.dataIndex] || "";
+              }
+
+              const nearestIndex = getNearestAvailableIndex(
+                tradeDataset.data,
+                context.dataIndex
+              );
+              if (nearestIndex >= 0) {
+                return labels[nearestIndex] || "";
+              }
+
+              return labels[context.dataIndex] || "";
+            },
             label: (context) => {
               const datasetLabel = context.dataset?.label || "價格";
-              const values = context.chart?.data?.datasets?.[context.datasetIndex]?.data || [];
               const rawValue = context.parsed?.y;
 
               if (datasetLabel === "昨收") {
@@ -604,20 +837,42 @@ function renderChart(data) {
                   : null;
               }
 
-              const resolvedValue = (() => {
-                if (hasValue(rawValue)) {
-                  return rawValue;
-                }
-
-                const nearestValue = getNearestAvailablePrice(values, context.dataIndex);
-                return hasValue(nearestValue) ? nearestValue : null;
-              })();
+              const resolvedValue = resolveTooltipTradePrice(context);
 
               if (!hasValue(resolvedValue)) {
                 return null;
               }
 
               return `成交價 ${Number(resolvedValue).toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+            },
+            labelColor: (context) => {
+              const datasetLabel = context.dataset?.label;
+              if (datasetLabel === "昨收") {
+                return {
+                  borderColor: "#94a3b8",
+                  backgroundColor: "#94a3b8",
+                };
+              }
+
+              const resolvedValue = resolveTooltipTradePrice(context);
+              const color = getChartTrendColors(
+                resolvedValue,
+                context.chart?.$prevClose
+              ).borderColor;
+
+              return {
+                borderColor: color,
+                backgroundColor: color,
+              };
+            },
+            labelTextColor: (context) => {
+              const datasetLabel = context.dataset?.label;
+              if (datasetLabel === "昨收") {
+                return "#cbd5e1";
+              }
+
+              const resolvedValue = resolveTooltipTradePrice(context);
+              return getChartTrendColors(resolvedValue, context.chart?.$prevClose).borderColor;
             },
           },
         },
@@ -655,6 +910,7 @@ function renderChart(data) {
       },
     },
   });
+  priceChart.$prevClose = prevClose;
 }
 
 async function fetchChart(code) {
@@ -768,11 +1024,6 @@ async function fetchStock(code, manual = true) {
   errorPanel.classList.add("hidden");
   document.getElementById("display-code").textContent = normalizedCode;
 
-  document.getElementById("display-trade-volume").textContent = "—";
-  document.getElementById("display-accum-volume").textContent = "—";
-  document.getElementById("display-open").textContent = "—";
-  document.getElementById("display-high").textContent = "—";
-  document.getElementById("display-low").textContent = "—";
   statusText.textContent = manual ? `正在查詢 ${normalizedCode}...` : `正在更新 ${normalizedCode}...`;
 
   try {
@@ -819,6 +1070,11 @@ async function fetchStock(code, manual = true) {
 }
 
 function handleSearch() {
+  document.getElementById("display-trade-volume").textContent = "—";
+  document.getElementById("display-accum-volume").textContent = "—";
+  document.getElementById("display-open").textContent = "—";
+  document.getElementById("display-high").textContent = "—";
+  document.getElementById("display-low").textContent = "—";
   fetchStock(stockInput.value, true);
 }
 
