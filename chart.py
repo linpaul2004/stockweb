@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
@@ -11,6 +9,7 @@ from curl_cffi import requests as curl_requests
 TZ = ZoneInfo("Asia/Taipei")
 MARKET_OPEN = time(9, 0)
 MARKET_CLOSE = time(13, 30)
+_PREV_CLOSE_CACHE: dict[tuple[str, str], float] = {}
 
 
 def yfinance_symbol(code: str) -> str:
@@ -58,9 +57,8 @@ def _previous_close_from_daily(daily: pd.DataFrame, today) -> float | None:
     return float(close.iloc[-1])
 
 
-def get_previous_close_for_code(code: str) -> float | None:
+def _get_previous_close_from_yf(code: str, today) -> float | None:
     symbol = yfinance_symbol(code)
-    today = datetime.now(TZ).date()
     daily = _get_ticker(symbol).history(
         period="10d",
         interval="1d",
@@ -68,6 +66,21 @@ def get_previous_close_for_code(code: str) -> float | None:
     )
     prev_close = _previous_close_from_daily(daily, today)
     return round(prev_close, 4) if prev_close is not None else None
+
+
+def get_previous_close_for_code(code: str) -> float | None:
+    today = datetime.now(TZ).date()
+    cache_key = (code, today.isoformat())
+
+    if cache_key in _PREV_CLOSE_CACHE:
+        return _PREV_CLOSE_CACHE[cache_key]
+
+    rounded_prev_close = _get_previous_close_from_yf(code, today)
+
+    if rounded_prev_close is not None:
+        _PREV_CLOSE_CACHE[cache_key] = rounded_prev_close
+
+    return rounded_prev_close
 
 
 def _y_axis_bounds(prev_close: float, prices: list[float]) -> tuple[float, float]:
@@ -88,16 +101,15 @@ def get_intraday_chart(code: str) -> dict:
     ticker = _get_ticker(symbol)
 
     intraday = ticker.history(period="1d", interval="1m", auto_adjust=False)
-    daily = ticker.history(period="10d", interval="1d", auto_adjust=False)
-    prev_close = _previous_close_from_daily(daily, today)
+    prev_close = get_previous_close_for_code(code)
 
     points: list[dict[str, object]] = []
     if not intraday.empty:
         close = _series(intraday, "Close")
         for ts, price in close.dropna().items():
             local = _to_local(ts)
-            if local.date() != today:
-                continue
+            # if local.date() != today:
+            #     continue
             local_time = local.time()
             if MARKET_OPEN <= local_time <= MARKET_CLOSE:
                 points.append(

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>台股即時行情</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=12">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <div class="page">
@@ -68,7 +68,7 @@
       <div class="chart-order-row">
         <section class="chart-section">
           <div class="chart-header">
-            <h3>今日走勢 (09:00 – 13:30)</h3>
+            <h3>最近單日走勢</h3>
             <p id="chart-prev-close" class="chart-meta"></p>
           </div>
           <div class="chart-legend" id="chart-legend">
@@ -136,9 +136,9 @@
   <script>
     window.STOCK_CONFIG = {
       defaultStock: "{{ default_stock }}",
-      refreshSeconds: {{ refresh_seconds }},
+      refreshSeconds: "{{ refresh_seconds }}",
     };
   </script>
-  <script src="{{ url_for('static', filename='app.js') }}?v=12"></script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

@@ -1,0 +1,16 @@
+name: Cloud Run Deploy Check
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  docker-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test Docker build (Dry Run)
+        run: docker build -t stockweb .
