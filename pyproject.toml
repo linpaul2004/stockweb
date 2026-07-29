@@ -1,6 +1,6 @@
 [project]
 name = "stockweb"
-version = "1.4.2"
+version = "1.4.3"
 description = "A real-time Taiwan stock dashboard with intraday price charts and order book."
 readme = "README.md"
 requires-python = ">=3.14"
