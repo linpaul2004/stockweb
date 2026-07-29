@@ -18,7 +18,7 @@ TZ_TAIPEI = ZoneInfo("Asia/Taipei")
 
 @app.route("/")
 def index():
-    return render_template("index.html", default_stock=DEFAULT_STOCK, refresh_seconds=REFRESH_SECONDS)
+    return render_template("../templates/index.html", default_stock=DEFAULT_STOCK, refresh_seconds=REFRESH_SECONDS)
 
 
 @app.route("/api/search")

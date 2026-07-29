@@ -70,8 +70,7 @@ Cloud Run sets `PORT=8080`; the container starts `gunicorn` automatically.
 
 ```
 stockweb/
-├── main.py           # Flask app and API routes
-├── chart.py          # Intraday chart and previous close helpers
+├── src/              # Backend Server
 ├── templates/        # HTML templates
 ├── static/           # CSS and client-side JavaScript
 ├── Dockerfile
