@@ -6,6 +6,7 @@ from flask import Flask, jsonify, render_template, request
 import twstock
 
 from chart import get_intraday_chart, get_previous_close_for_code
+from stock_search import resolve_stock_code, search_stocks
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
@@ -20,11 +21,24 @@ def index():
     return render_template("index.html", default_stock=DEFAULT_STOCK, refresh_seconds=REFRESH_SECONDS)
 
 
+@app.route("/api/search")
+def search_stock():
+    query = request.args.get("q", "").strip()
+    if not query:
+        return jsonify({"success": True, "results": []})
+
+    return jsonify({"success": True, "results": search_stocks(query)})
+
+
 @app.route("/api/stock")
 def get_stock():
-    code = request.args.get("code", DEFAULT_STOCK).strip()
-    if not code:
-        return jsonify({"success": False, "message": "請輸入股票代號"}), 400
+    raw_query = request.args.get("code", DEFAULT_STOCK).strip()
+    if not raw_query:
+        return jsonify({"success": False, "message": "請輸入股票代號或公司名稱"}), 400
+
+    code, error_message = resolve_stock_code(raw_query)
+    if error_message:
+        return jsonify({"success": False, "message": error_message}), 400
 
     data = twstock.realtime.get(code)
     if not data.get("success"):
@@ -51,9 +65,13 @@ def get_stock():
 
 @app.route("/api/chart")
 def get_chart():
-    code = request.args.get("code", DEFAULT_STOCK).strip()
-    if not code:
-        return jsonify({"success": False, "message": "請輸入股票代號"}), 400
+    raw_query = request.args.get("code", DEFAULT_STOCK).strip()
+    if not raw_query:
+        return jsonify({"success": False, "message": "請輸入股票代號或公司名稱"}), 400
+
+    code, error_message = resolve_stock_code(raw_query)
+    if error_message:
+        return jsonify({"success": False, "message": error_message}), 400
 
     try:
         return jsonify(get_intraday_chart(code))
