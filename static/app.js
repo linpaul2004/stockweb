@@ -1608,6 +1608,10 @@ function handleSearch() {
   fetchStock(stockInput.value, true);
 }
 
+document.getElementById('stock-code').addEventListener('focus', function () {
+  this.select();
+});
+
 searchBtn.addEventListener("click", handleSearch);
 
 fetchStock(defaultStock, true);
