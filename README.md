@@ -65,14 +65,16 @@ Cloud Run sets `PORT=8080`; the container starts `gunicorn` automatically.
 | `GET /` | Web UI |
 | `GET /api/stock?code=0050` | Real-time stock data |
 | `GET /api/chart?code=0050` | Intraday chart data |
+| `GET /api/search?q=50`     | Search stock |
 
 ## Project structure
 
 ```
 stockweb/
-├── src/              # Backend Server
+├── main.py           # Flask app and API routes
 ├── templates/        # HTML templates
 ├── static/           # CSS and client-side JavaScript
+├── util/             # Backend Utility
 ├── Dockerfile
 ├── requirements.txt  # Generated via: uv export --format requirements-txt --no-hashes -o requirements.txt
 └── pyproject.toml
