@@ -9,9 +9,9 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py chart.py ./
+COPY src/ src/
 COPY templates/ templates/
 COPY static/ static/
 
 ENV PORT=8080
-CMD exec gunicorn --bind :$PORT --workers 1 --threads 4 --timeout 120 main:app
+CMD exec gunicorn --bind :$PORT --workers 1 --threads 4 --timeout 120 src.main:app
