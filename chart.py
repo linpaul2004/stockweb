@@ -7,6 +7,7 @@ import yfinance as yf
 from curl_cffi import requests as curl_requests
 
 TZ = ZoneInfo("Asia/Taipei")
+PRE_MARKET_OPEN = time(8, 30)
 MARKET_OPEN = time(9, 0)
 MARKET_CLOSE = time(13, 30)
 _PREV_CLOSE_CACHE: dict[tuple[str, str], float] = {}
@@ -95,6 +96,45 @@ def _y_axis_bounds(prev_close: float, prices: list[float]) -> tuple[float, float
     return round(prev_close - max_dev, 4), round(prev_close + max_dev, 4)
 
 
+def _time_to_minutes(time_str: str) -> int:
+    hour, minute = map(int, time_str.split(":"))
+    return hour * 60 + minute
+
+
+def _normalize_chart_points(raw_points: list[dict[str, object]]) -> list[dict[str, object]]:
+    premarket: dict[str, float] = {}
+    regular: dict[str, float] = {}
+    closing_price: float | None = None
+
+    pre_market_open = 8 * 60 + 30
+    market_open = 9 * 60
+    last_regular = 13 * 60 + 24
+    closing_start = 13 * 60 + 25
+    market_close = 13 * 60 + 30
+
+    for point in raw_points:
+        time_str = str(point["time"])
+        minutes = _time_to_minutes(time_str)
+        price = float(point["price"])
+
+        if pre_market_open <= minutes < market_open:
+            premarket[time_str] = price
+        elif market_open <= minutes <= last_regular:
+            regular[time_str] = price
+        elif closing_start <= minutes <= market_close:
+            closing_price = price
+
+    normalized: list[dict[str, object]] = []
+    for time_str in sorted(premarket.keys()):
+        normalized.append({"time": time_str, "price": premarket[time_str]})
+    for time_str in sorted(regular.keys()):
+        normalized.append({"time": time_str, "price": regular[time_str]})
+    if closing_price is not None:
+        normalized.append({"time": "13:30", "price": round(closing_price, 4)})
+
+    return normalized
+
+
 def get_intraday_chart(code: str) -> dict:
     symbol = yfinance_symbol(code)
     today = datetime.now(TZ).date()
@@ -111,13 +151,17 @@ def get_intraday_chart(code: str) -> dict:
             # if local.date() != today:
             #     continue
             local_time = local.time()
-            if MARKET_OPEN <= local_time <= MARKET_CLOSE:
+            if (PRE_MARKET_OPEN <= local_time < MARKET_OPEN) or (
+                MARKET_OPEN <= local_time <= MARKET_CLOSE
+            ):
                 points.append(
                     {
                         "time": local.strftime("%H:%M"),
                         "price": round(float(price), 4),
                     }
                 )
+
+    points = _normalize_chart_points(points)
 
     result: dict[str, object] = {
         "success": True,
