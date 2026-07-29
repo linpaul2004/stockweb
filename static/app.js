@@ -1,6 +1,7 @@
 const { defaultStock, refreshSeconds } = window.STOCK_CONFIG;
 
 const stockInput = document.getElementById("stock-code");
+const stockSuggestions = document.getElementById("stock-suggestions");
 const searchBtn = document.getElementById("search-btn");
 const statusText = document.getElementById("status-text");
 const countdownEl = document.getElementById("countdown");
@@ -27,25 +28,330 @@ let lastLatestPrice = null;
 let lastTradeVolume = null;
 let lastPrevClose = null;
 let lastChartData = null;
+let lastDisplayPriceTime = null;
+let hasClosingPrice = false;
 let invertColors = localStorage.getItem("invertColors") !== "false";
+let suggestionResults = [];
+let activeSuggestionIndex = -1;
+let suggestionTimer = null;
+let suggestionRequestId = 0;
+let chartRequestId = 0;
 
-const CHART_REFRESH_SECONDS = 30;
+const SUGGESTION_DEBOUNCE_MS = 200;
+
+const CHART_REFRESH_SECONDS = 60;
+const CHART_SLOW_REFRESH_SECONDS = 300;
 
 function getTaipeiNow() {
   return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Taipei" }));
 }
 
-function isTradingHours() {
+function isWeekday() {
+  const day = getTaipeiNow().getDay();
+  return day !== 0 && day !== 6;
+}
+
+function getTaipeiMinutes() {
   const taipei = getTaipeiNow();
-  const day = taipei.getDay();
-  if (day === 0 || day === 6) {
+  return taipei.getHours() * 60 + taipei.getMinutes();
+}
+
+function isPreMarketTrial() {
+  if (!isWeekday()) {
+    return false;
+  }
+  const minutes = getTaipeiMinutes();
+  return minutes >= 8 * 60 + 30 && minutes < 9 * 60;
+}
+
+function isRegularTradingHours() {
+  if (!isWeekday()) {
+    return false;
+  }
+  const minutes = getTaipeiMinutes();
+  return minutes >= 9 * 60 && minutes < 13 * 60 + 30;
+}
+
+function isTradingHours() {
+  return isPreMarketTrial() || isRegularTradingHours();
+}
+
+function isTrialMatchingMinutes(minutes) {
+  const preMarketStart = 8 * 60 + 30;
+  const preMarketEnd = 9 * 60;
+  const closeTrialStart = 13 * 60 + 25;
+  const closeTrialEnd = 13 * 60 + 30;
+  return (
+    (minutes >= preMarketStart && minutes < preMarketEnd) ||
+    (minutes >= closeTrialStart && minutes <= closeTrialEnd)
+  );
+}
+
+function parseDisplayPriceMinutes(priceTime) {
+  if (!priceTime) {
+    return null;
+  }
+
+  if (typeof priceTime === "string") {
+    const timeMatch = priceTime.match(/(\d{1,2}):(\d{2})/);
+    if (!timeMatch) {
+      return null;
+    }
+    return Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
+  }
+
+  if (priceTime instanceof Date && !Number.isNaN(priceTime.getTime())) {
+    return priceTime.getHours() * 60 + priceTime.getMinutes();
+  }
+
+  return null;
+}
+
+function formatChartPointTime(hhmm) {
+  const taipei = getTaipeiNow();
+  const year = taipei.getFullYear();
+  const month = String(taipei.getMonth() + 1).padStart(2, "0");
+  const day = String(taipei.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hhmm}:00`;
+}
+
+function formatDisplayPriceTime(priceTime) {
+  if (!priceTime) {
+    return "";
+  }
+
+  if (typeof priceTime === "string") {
+    if (/^\d{2}:\d{2}$/.test(priceTime)) {
+      return formatChartPointTime(priceTime);
+    }
+    return priceTime;
+  }
+
+  if (priceTime instanceof Date && !Number.isNaN(priceTime.getTime())) {
+    const year = priceTime.getFullYear();
+    const month = String(priceTime.getMonth() + 1).padStart(2, "0");
+    const day = String(priceTime.getDate()).padStart(2, "0");
+    const hours = String(priceTime.getHours()).padStart(2, "0");
+    const minutes = String(priceTime.getMinutes()).padStart(2, "0");
+    const seconds = String(priceTime.getSeconds()).padStart(2, "0");
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+  }
+
+  return "";
+}
+
+function updateDisplayTime() {
+  const timeText = formatDisplayPriceTime(lastDisplayPriceTime);
+  document.getElementById("display-time").textContent = timeText ? `更新時間：${timeText}` : "";
+}
+
+function hasChartPriceAtTime(chartData, timeLabel) {
+  const points = chartData?.points || [];
+  return points.some((point) => point.time === timeLabel);
+}
+
+function getChartPointAtTime(chartData, timeLabel) {
+  const points = chartData?.points || [];
+  return points.find((point) => point.time === timeLabel) || null;
+}
+
+function getLatestChartPoint(chartData) {
+  const points = chartData?.points || [];
+  if (!points.length) {
+    return null;
+  }
+  return points[points.length - 1];
+}
+
+function hasRegularSessionChartPoint(chartData) {
+  return (chartData?.points || []).some((point) => {
+    const minutes = parseDisplayPriceMinutes(point.time);
+    return minutes !== null && minutes >= 9 * 60 && minutes <= 13 * 60 + 24;
+  });
+}
+
+function canAppendClosingPriceToChart(chartData = lastChartData) {
+  if (!hasClosingPrice || !hasValue(lastLatestPrice) || !chartData) {
     return false;
   }
 
-  const minutes = taipei.getHours() * 60 + taipei.getMinutes();
-  const openMinutes = 9 * 60;
-  const closeMinutes = 13 * 60 + 30;
-  return minutes >= openMinutes && minutes < closeMinutes;
+  if (hasChartPriceAtTime(chartData, "13:30")) {
+    return false;
+  }
+
+  if (hasChartPriceAtTime(chartData, "13:24")) {
+    return true;
+  }
+
+  return (
+    isWeekday() &&
+    getTaipeiMinutes() >= 13 * 60 + 45 &&
+    hasRegularSessionChartPoint(chartData)
+  );
+}
+
+function mergeRealtimeClosingPriceIntoChartData(data) {
+  if (!canAppendClosingPriceToChart(data)) {
+    return data;
+  }
+
+  const points = data.points || [];
+  const withoutClosing = points.filter((point) => point.time !== "13:30");
+
+  return {
+    ...data,
+    points: [...withoutClosing, { time: "13:30", price: Number(lastLatestPrice) }],
+  };
+}
+
+function applyRealtimeClosingPriceToChart() {
+  if (!lastChartData || !canAppendClosingPriceToChart(lastChartData)) {
+    return;
+  }
+
+  renderChart(lastChartData, currentCode);
+}
+
+function detectClosingPriceFromRealtime(info) {
+  const minutes = parseDisplayPriceMinutes(info?.time);
+  return minutes !== null && minutes >= 13 * 60 + 30;
+}
+
+function refreshClosingPriceState(realtimeInfo) {
+  if (hasClosingPrice) {
+    return;
+  }
+
+  if (lastChartData && hasChartPriceAtTime(lastChartData, "13:30")) {
+    hasClosingPrice = true;
+    return;
+  }
+
+  if (detectClosingPriceFromRealtime(realtimeInfo)) {
+    hasClosingPrice = true;
+  }
+}
+
+function isPostCloseWaitingFor1330() {
+  if (!isWeekday()) {
+    return false;
+  }
+  return getTaipeiMinutes() >= 13 * 60 + 30 && !hasClosingPrice;
+}
+
+function shouldContinueRealtimeRefresh() {
+  return isTradingHours() || isPostCloseWaitingFor1330();
+}
+
+function shouldContinueChartRefresh() {
+  if (!isWeekday()) {
+    return false;
+  }
+
+  if (getTaipeiMinutes() >= 14 * 60) {
+    return false;
+  }
+
+  if (lastChartData && hasChartPriceAtTime(lastChartData, "13:30")) {
+    return false;
+  }
+
+  return true;
+}
+
+function getChartRefreshSeconds() {
+  if (!lastChartData) {
+    return CHART_REFRESH_SECONDS;
+  }
+
+  if (hasChartPriceAtTime(lastChartData, "13:24")) {
+    return CHART_SLOW_REFRESH_SECONDS;
+  }
+
+  if (
+    getTaipeiMinutes() >= 13 * 60 + 45 &&
+    hasRegularSessionChartPoint(lastChartData) &&
+    !hasChartPriceAtTime(lastChartData, "13:30")
+  ) {
+    return CHART_SLOW_REFRESH_SECONDS;
+  }
+
+  return CHART_REFRESH_SECONDS;
+}
+
+function stopChartRefresh() {
+  if (chartTimer) {
+    clearTimeout(chartTimer);
+    chartTimer = null;
+  }
+}
+
+function scheduleChartRefresh() {
+  stopChartRefresh();
+
+  if (!shouldContinueChartRefresh()) {
+    return;
+  }
+
+  chartTimer = setTimeout(async () => {
+    chartTimer = null;
+    await fetchChart(currentCode);
+  }, getChartRefreshSeconds() * 1000);
+}
+
+function applyChartPriceFallback() {
+  if (!lastChartData) {
+    return;
+  }
+
+  const latestPoint = getLatestChartPoint(lastChartData);
+  if (!latestPoint) {
+    return;
+  }
+
+  if (!hasValue(lastLatestPrice)) {
+    lastLatestPrice = latestPoint.price;
+    lastDisplayPriceTime = latestPoint.time;
+    refreshPriceDisplay();
+    updateDisplayTime();
+    updatePriceLabel();
+  }
+}
+
+function applyClosingPriceDisplay() {
+  if (!hasClosingPrice) {
+    return false;
+  }
+
+  const closingPoint = getChartPointAtTime(lastChartData, "13:30");
+  if (closingPoint) {
+    lastLatestPrice = closingPoint.price;
+    lastDisplayPriceTime = closingPoint.time;
+    refreshPriceDisplay();
+    updateDisplayTime();
+    updatePriceLabel();
+    return true;
+  }
+
+  return false;
+}
+
+function handleMarketStateAfterUpdate(code) {
+  refreshClosingPriceState();
+
+  if (hasClosingPrice) {
+    applyClosingPriceDisplay();
+  }
+
+  if (shouldContinueRealtimeRefresh()) {
+    setMarketOpenStatus(code);
+    resetCountdown();
+    startCountdown();
+    return;
+  }
+
+  stopAllRefresh();
+  setMarketClosedStatus(code);
 }
 
 function stopAllRefresh() {
@@ -53,10 +359,7 @@ function stopAllRefresh() {
     clearInterval(countdownTimer);
     countdownTimer = null;
   }
-  if (chartTimer) {
-    clearInterval(chartTimer);
-    chartTimer = null;
-  }
+  stopChartRefresh();
 }
 
 function setMarketClosedStatus(code) {
@@ -72,7 +375,18 @@ function setMarketOpenStatus(code) {
 }
 
 function updatePriceLabel() {
-  priceLabelEl.textContent = isTradingHours() ? "最新成交價" : "收盤價";
+  if (hasClosingPrice) {
+    priceLabelEl.textContent = "收盤價";
+    return;
+  }
+
+  const priceMinutes = parseDisplayPriceMinutes(lastDisplayPriceTime);
+  if (priceMinutes !== null && isTrialMatchingMinutes(priceMinutes)) {
+    priceLabelEl.textContent = "最近試撮價";
+    return;
+  }
+
+  priceLabelEl.textContent = "最近成交價";
 }
 
 function applyColorMode() {
@@ -102,6 +416,168 @@ function refreshPriceDisplay() {
   }
 }
 
+function hideSuggestions() {
+  suggestionResults = [];
+  activeSuggestionIndex = -1;
+  stockSuggestions.innerHTML = "";
+  stockSuggestions.classList.add("hidden");
+  stockInput.setAttribute("aria-expanded", "false");
+}
+
+function renderSuggestions() {
+  stockSuggestions.innerHTML = "";
+
+  if (!suggestionResults.length) {
+    stockSuggestions.classList.add("hidden");
+    stockInput.setAttribute("aria-expanded", "false");
+    return;
+  }
+
+  suggestionResults.forEach((item, index) => {
+    const option = document.createElement("li");
+    option.className = `stock-suggestion${index === activeSuggestionIndex ? " active" : ""}`;
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", String(index === activeSuggestionIndex));
+    option.dataset.code = item.code;
+    option.innerHTML = `
+      <span class="stock-suggestion-code">${item.code}</span>
+      <span class="stock-suggestion-name">${item.name}</span>
+      <span class="stock-suggestion-market">${item.market || ""}</span>
+    `;
+    option.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      selectSuggestion(item);
+    });
+    stockSuggestions.appendChild(option);
+  });
+
+  stockSuggestions.classList.remove("hidden");
+  stockInput.setAttribute("aria-expanded", "true");
+}
+
+async function fetchSuggestions(query) {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    hideSuggestions();
+    return;
+  }
+
+  const requestId = ++suggestionRequestId;
+
+  try {
+    const response = await fetch(`/api/search?q=${encodeURIComponent(trimmed)}`);
+    const data = await response.json();
+
+    if (requestId !== suggestionRequestId) {
+      return;
+    }
+
+    if (!response.ok || !data.success) {
+      hideSuggestions();
+      return;
+    }
+
+    suggestionResults = data.results || [];
+    activeSuggestionIndex = suggestionResults.length ? 0 : -1;
+    renderSuggestions();
+  } catch {
+    if (requestId === suggestionRequestId) {
+      hideSuggestions();
+    }
+  }
+}
+
+function scheduleSuggestionFetch(query) {
+  if (suggestionTimer) {
+    clearTimeout(suggestionTimer);
+  }
+
+  suggestionTimer = setTimeout(() => {
+    suggestionTimer = null;
+    fetchSuggestions(query);
+  }, SUGGESTION_DEBOUNCE_MS);
+}
+
+function selectSuggestion(item) {
+  stockInput.value = item.code;
+  hideSuggestions();
+  handleSearch();
+}
+
+function moveSuggestionSelection(direction) {
+  if (!suggestionResults.length) {
+    return;
+  }
+
+  if (activeSuggestionIndex < 0) {
+    activeSuggestionIndex = direction > 0 ? 0 : suggestionResults.length - 1;
+  } else {
+    activeSuggestionIndex =
+      (activeSuggestionIndex + direction + suggestionResults.length) %
+      suggestionResults.length;
+  }
+
+  const selected = suggestionResults[activeSuggestionIndex];
+  if (selected) {
+    stockInput.value = selected.code;
+  }
+  renderSuggestions();
+}
+
+function initStockAutocomplete() {
+  stockInput.addEventListener("input", () => {
+    scheduleSuggestionFetch(stockInput.value);
+  });
+
+  stockInput.addEventListener("focus", () => {
+    if (stockInput.value.trim()) {
+      scheduleSuggestionFetch(stockInput.value);
+    }
+  });
+
+  stockInput.addEventListener("blur", () => {
+    setTimeout(hideSuggestions, 120);
+  });
+
+  stockInput.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      if (suggestionResults.length) {
+        event.preventDefault();
+        moveSuggestionSelection(1);
+      }
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      if (suggestionResults.length) {
+        event.preventDefault();
+        moveSuggestionSelection(-1);
+      }
+      return;
+    }
+
+    if (event.key === "Escape") {
+      hideSuggestions();
+      return;
+    }
+
+    if (event.key === "Enter") {
+      if (activeSuggestionIndex >= 0 && suggestionResults[activeSuggestionIndex]) {
+        event.preventDefault();
+        selectSuggestion(suggestionResults[activeSuggestionIndex]);
+        return;
+      }
+      handleSearch();
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".search-input-wrap")) {
+      hideSuggestions();
+    }
+  });
+}
+
 function hasValue(value) {
   return value !== null && value !== undefined && value !== "" && value !== "-";
 }
@@ -110,6 +586,20 @@ function resetStockDisplayCache() {
   lastLatestPrice = null;
   lastTradeVolume = null;
   lastPrevClose = null;
+  lastDisplayPriceTime = null;
+  hasClosingPrice = false;
+  lastChartData = null;
+}
+
+function resetChartState() {
+  stopChartRefresh();
+  if (priceChart) {
+    priceChart.destroy();
+    priceChart = null;
+  }
+  chartPrevClose.textContent = "";
+  chartLegend.classList.add("hidden");
+  setChartMessage("");
 }
 
 function formatNumber(value) {
@@ -390,22 +880,34 @@ function renderStock(data) {
   const latest = realtime.latest_trade_price;
   const prevClose = data.prev_close;
 
-  updatePriceLabel();
-
   if (hasValue(prevClose)) {
     lastPrevClose = prevClose;
   }
   if (hasValue(latest)) {
     lastLatestPrice = latest;
+    if (hasValue(info.time)) {
+      lastDisplayPriceTime = info.time;
+    }
   }
   if (hasValue(realtime.trade_volume)) {
     lastTradeVolume = realtime.trade_volume;
   }
 
+  refreshClosingPriceState(info);
+  if (!hasValue(latest)) {
+    applyChartPriceFallback();
+  }
+  applyRealtimeClosingPriceToChart();
+  if (hasClosingPrice) {
+    applyClosingPriceDisplay();
+  }
+
+  updatePriceLabel();
+
   document.getElementById("display-code").textContent = info.code || currentCode;
   document.getElementById("display-name").textContent = info.name || "—";
   document.getElementById("display-fullname").textContent = info.fullname || "";
-  document.getElementById("display-time").textContent = info.time ? `更新時間：${info.time}` : "";
+  updateDisplayTime();
 
   const priceEl = document.getElementById("display-price");
   const changeEl = document.getElementById("display-change");
@@ -443,7 +945,7 @@ function initColorToggle() {
     applyColorMode();
     refreshPriceDisplay();
     if (lastChartData) {
-      renderChart(lastChartData);
+      renderChart(lastChartData, currentCode);
     }
   });
 }
@@ -464,7 +966,7 @@ function buildFixedTimeAxis(points) {
   const prices = [];
   const pointMap = new Map(points.map((point) => [point.time, point.price]));
 
-  for (let minute = 9 * 60; minute <= 13 * 60 + 25; minute += 1) {
+  for (let minute = 9 * 60; minute <= 13 * 60 + 24; minute += 1) {
     const hour = String(Math.floor(minute / 60)).padStart(2, "0");
     const minutePart = String(minute % 60).padStart(2, "0");
     const label = `${hour}:${minutePart}`;
@@ -472,7 +974,24 @@ function buildFixedTimeAxis(points) {
     prices.push(pointMap.has(label) ? pointMap.get(label) : null);
   }
 
+  labels.push("13:30");
+  prices.push(pointMap.has("13:30") ? pointMap.get("13:30") : null);
+
   return { labels, prices };
+}
+
+const CHART_AXIS_TICK_LABELS = new Set(["09:00", "10:00", "11:00", "12:00", "13:00", "13:30"]);
+
+function getChartXAxisTicksConfig() {
+  return {
+    color: "#8b9bb8",
+    autoSkip: false,
+    maxRotation: 0,
+    callback(value) {
+      const label = this.getLabelForValue(value);
+      return CHART_AXIS_TICK_LABELS.has(label) ? label : "";
+    },
+  };
 }
 
 function getNearestAvailableIndex(values, index) {
@@ -659,11 +1178,33 @@ const chartSnapInteractionPlugin = {
   },
 };
 
-function renderChart(data) {
-  lastChartData = data;
-  const points = data.points || [];
-  const prevClose = data.prev_close;
+function syncChartRefreshSchedule() {
+  if (shouldContinueChartRefresh()) {
+    scheduleChartRefresh();
+  } else {
+    stopChartRefresh();
+  }
+}
+
+function renderChart(data, expectedCode = currentCode) {
+  if (expectedCode !== currentCode) {
+    return;
+  }
+
+  const chartData = mergeRealtimeClosingPriceIntoChartData(data);
+  lastChartData = chartData;
+  const points = chartData.points || [];
+  const prevClose = chartData.prev_close;
   const hasPrevClose = prevClose !== null && prevClose !== undefined;
+
+  refreshClosingPriceState();
+  if (!hasValue(lastLatestPrice)) {
+    applyChartPriceFallback();
+  }
+  if (hasClosingPrice) {
+    applyClosingPriceDisplay();
+    handleMarketStateAfterUpdate(currentCode);
+  }
 
   chartPrevClose.textContent = hasPrevClose
     ? `昨收 ${Number(prevClose).toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
@@ -676,6 +1217,7 @@ function renderChart(data) {
     }
     chartLegend.classList.add("hidden");
     setChartMessage(data.message || "尚無當日走勢資料");
+    syncChartRefreshSchedule();
     return;
   }
 
@@ -719,13 +1261,14 @@ function renderChart(data) {
       );
     }
 
-    if (data.y_min !== undefined && data.y_max !== undefined) {
-      priceChart.options.scales.y.min = data.y_min;
-      priceChart.options.scales.y.max = data.y_max;
+    if (chartData.y_min !== undefined && chartData.y_max !== undefined) {
+      priceChart.options.scales.y.min = chartData.y_min;
+      priceChart.options.scales.y.max = chartData.y_max;
     }
 
     priceChart.$prevClose = prevClose;
     priceChart.update("none");
+    syncChartRefreshSchedule();
     return;
   }
 
@@ -884,17 +1427,14 @@ function renderChart(data) {
             text: "時間",
             color: "#8b9bb8",
           },
-          ticks: {
-            color: "#8b9bb8",
-            maxTicksLimit: 8,
-          },
+          ticks: getChartXAxisTicksConfig(),
           grid: {
             color: "rgba(36, 48, 73, 0.6)",
           },
         },
         y: {
-          min: data.y_min,
-          max: data.y_max,
+          min: chartData.y_min,
+          max: chartData.y_max,
           title: {
             display: true,
             text: "價格",
@@ -911,6 +1451,7 @@ function renderChart(data) {
     },
   });
   priceChart.$prevClose = prevClose;
+  syncChartRefreshSchedule();
 }
 
 async function fetchChart(code) {
@@ -919,43 +1460,35 @@ async function fetchChart(code) {
     return;
   }
 
+  const requestId = chartRequestId;
+  const requestedCode = normalizedCode;
+
   try {
     const response = await fetch(`/api/chart?code=${encodeURIComponent(normalizedCode)}`);
     const data = await response.json();
+
+    if (requestId !== chartRequestId || requestedCode !== currentCode) {
+      return;
+    }
 
     if (!response.ok || !data.success) {
       throw new Error(data.message || "無法取得走勢資料");
     }
 
-    renderChart(data);
+    renderChart(data, requestedCode);
   } catch (error) {
-    if (priceChart) {
-      priceChart.destroy();
-      priceChart = null;
+    if (requestId !== chartRequestId || requestedCode !== currentCode) {
+      return;
     }
-    chartPrevClose.textContent = "";
-    chartLegend.classList.add("hidden");
+
+    resetChartState();
     setChartMessage(error.message || "走勢圖載入失敗");
+    syncChartRefreshSchedule();
   }
 }
 
 function startChartRefresh() {
-  if (!isTradingHours()) {
-    return;
-  }
-
-  if (chartTimer) {
-    clearInterval(chartTimer);
-  }
-
-  chartTimer = setInterval(() => {
-    if (!isTradingHours()) {
-      stopAllRefresh();
-      setMarketClosedStatus(currentCode);
-      return;
-    }
-    fetchChart(currentCode);
-  }, CHART_REFRESH_SECONDS * 1000);
+  scheduleChartRefresh();
 }
 
 function showError(message) {
@@ -970,7 +1503,7 @@ function resetCountdown() {
 }
 
 function startCountdown() {
-  if (!isTradingHours()) {
+  if (!shouldContinueRealtimeRefresh()) {
     return;
   }
 
@@ -980,7 +1513,7 @@ function startCountdown() {
 
   resetCountdown();
   countdownTimer = setInterval(() => {
-    if (!isTradingHours()) {
+    if (!shouldContinueRealtimeRefresh()) {
       stopAllRefresh();
       setMarketClosedStatus(currentCode);
       return;
@@ -1000,11 +1533,11 @@ function startCountdown() {
 async function fetchStock(code, manual = true) {
   const normalizedCode = code.trim();
   if (!normalizedCode) {
-    showError("請輸入股票代號");
+    showError("請輸入股票代號或公司名稱");
     return;
   }
 
-  if (!manual && !isTradingHours()) {
+  if (!manual && !shouldContinueRealtimeRefresh()) {
     return;
   }
 
@@ -1017,7 +1550,9 @@ async function fetchStock(code, manual = true) {
   currentCode = normalizedCode;
 
   if (stockChanged) {
+    chartRequestId += 1;
     resetStockDisplayCache();
+    resetChartState();
   }
 
   stockPanel.classList.remove("hidden");
@@ -1034,29 +1569,23 @@ async function fetchStock(code, manual = true) {
       throw new Error(data.message || "無法取得股票資料");
     }
 
+    const resolvedCode = data.info?.code || normalizedCode;
+    currentCode = resolvedCode;
+    stockInput.value = resolvedCode;
+
     renderStock(data);
+    handleMarketStateAfterUpdate(resolvedCode);
 
-    if (isTradingHours()) {
-      setMarketOpenStatus(normalizedCode);
-      resetCountdown();
-      startCountdown();
-
-      if (manual || stockChanged) {
-        fetchChart(normalizedCode);
+    if (manual || stockChanged) {
+      fetchChart(resolvedCode);
+      if (shouldContinueChartRefresh()) {
         startChartRefresh();
-      }
-    } else {
-      stopAllRefresh();
-      setMarketClosedStatus(normalizedCode);
-
-      if (manual || stockChanged) {
-        fetchChart(normalizedCode);
       }
     }
   } catch (error) {
     showError(error.message || "查詢失敗，請稍後再試");
 
-    if (isTradingHours()) {
+    if (shouldContinueRealtimeRefresh()) {
       statusText.textContent = "查詢失敗";
       resetCountdown();
       startCountdown();
@@ -1070,6 +1599,7 @@ async function fetchStock(code, manual = true) {
 }
 
 function handleSearch() {
+  hideSuggestions();
   document.getElementById("display-trade-volume").textContent = "—";
   document.getElementById("display-accum-volume").textContent = "—";
   document.getElementById("display-open").textContent = "—";
@@ -1079,11 +1609,7 @@ function handleSearch() {
 }
 
 searchBtn.addEventListener("click", handleSearch);
-stockInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    handleSearch();
-  }
-});
 
 fetchStock(defaultStock, true);
 initColorToggle();
+initStockAutocomplete();
