@@ -157,8 +157,6 @@ def get_intraday_chart(code: str) -> dict:
         close = _series(intraday, "Close")
         for ts, price in close.dropna().items():
             local = _to_local(ts)
-            # if local.date() != today:
-            #     continue
             local_time = local.time()
             if (PRE_MARKET_OPEN <= local_time < MARKET_OPEN) or (
                 MARKET_OPEN <= local_time <= MARKET_CLOSE

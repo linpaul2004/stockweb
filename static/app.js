@@ -27,6 +27,7 @@ let priceChart = null;
 let lastLatestPrice = null;
 let lastTradeVolume = null;
 let lastPrevClose = null;
+let lastRealtime = null;
 let lastChartData = null;
 let lastDisplayPriceTime = null;
 let hasClosingPrice = false;
@@ -690,6 +691,7 @@ function resetStockDisplayCache() {
   lastLatestPrice = null;
   lastTradeVolume = null;
   lastPrevClose = null;
+  lastRealtime = null;
   lastDisplayPriceTime = null;
   hasClosingPrice = false;
   lastChartData = null;
@@ -740,9 +742,11 @@ function colorWithAlpha(color, alpha) {
 }
 
 function getChartTrendColors(latestPrice, prevClose) {
+  const latestNum = Number(latestPrice);
+  const prevCloseNum = Number(prevClose);
   const changeClass =
-    hasValue(prevClose) && hasValue(latestPrice)
-      ? getChangeClass(latestPrice, prevClose)
+    !Number.isNaN(latestNum) && !Number.isNaN(prevCloseNum)
+      ? getChangeClass(latestNum, prevCloseNum)
       : "flat";
   const cssVar =
     changeClass === "up" ? "--up" : changeClass === "down" ? "--down" : "--flat";
@@ -755,26 +759,25 @@ function getChartTrendColors(latestPrice, prevClose) {
 }
 
 function buildPriceSegmentStyle(prevClose) {
+  const referenceClose = Number(prevClose);
+  const flatColor = getThemeColor("--flat") || "#94a3b8";
+
   return {
     borderColor: (ctx) => {
-      const start = ctx.p0?.parsed?.y;
       const end = ctx.p1?.parsed?.y;
-      if (start == null || end == null) {
-        return undefined;
+      if (end == null || Number.isNaN(referenceClose)) {
+        return flatColor;
       }
 
-      const segmentPrice = (start + end) / 2;
-      return getChartTrendColors(segmentPrice, prevClose).borderColor;
+      return getChartTrendColors(end, referenceClose).borderColor;
     },
     backgroundColor: (ctx) => {
-      const start = ctx.p0?.parsed?.y;
       const end = ctx.p1?.parsed?.y;
-      if (start == null || end == null) {
-        return undefined;
+      if (end == null || Number.isNaN(referenceClose)) {
+        return colorWithAlpha(flatColor, 0.12);
       }
 
-      const segmentPrice = (start + end) / 2;
-      return getChartTrendColors(segmentPrice, prevClose).backgroundColor;
+      return getChartTrendColors(end, referenceClose).backgroundColor;
     },
   };
 }
@@ -978,9 +981,20 @@ function renderOrderBook(realtime) {
   }
 }
 
+function refreshComparedStats() {
+  if (!lastRealtime) {
+    return;
+  }
+
+  setComparedStatValue("display-open", lastRealtime.open);
+  setComparedStatValue("display-high", lastRealtime.high);
+  setComparedStatValue("display-low", lastRealtime.low);
+}
+
 function renderStock(data) {
   const info = data.info || {};
   const realtime = data.realtime || {};
+  lastRealtime = realtime;
   const latest = realtime.latest_trade_price;
   const prevClose = data.prev_close;
 
@@ -1063,6 +1077,99 @@ function setChartMessage(message) {
 
   chartMessage.textContent = message;
   chartMessage.classList.remove("hidden");
+}
+
+function chartTimeToMinutes(timeLabel) {
+  const [hour, minute] = timeLabel.split(":").map(Number);
+  return hour * 60 + minute;
+}
+
+function minutesToChartTime(minutes) {
+  const hour = String(Math.floor(minutes / 60)).padStart(2, "0");
+  const minutePart = String(minutes % 60).padStart(2, "0");
+  return `${hour}:${minutePart}`;
+}
+
+function interpolateChartTime(startTime, endTime, ratio) {
+  const startMinutes = chartTimeToMinutes(startTime);
+  const endMinutes = chartTimeToMinutes(endTime);
+  const crossingMinutes = Math.round(startMinutes + ratio * (endMinutes - startMinutes));
+  return minutesToChartTime(crossingMinutes);
+}
+
+function getPriceSide(price, reference) {
+  const priceNum = Number(price);
+  const refNum = Number(reference);
+  if (Number.isNaN(priceNum) || Number.isNaN(refNum)) {
+    return 0;
+  }
+  if (priceNum > refNum) {
+    return 1;
+  }
+  if (priceNum < refNum) {
+    return -1;
+  }
+  return 0;
+}
+
+function insertPrevCloseCrossings(points, prevClose) {
+  if (!hasValue(prevClose) || points.length < 2) {
+    return points;
+  }
+
+  const referenceClose = Number(prevClose);
+  if (Number.isNaN(referenceClose)) {
+    return points;
+  }
+
+  const result = [];
+  const existingTimes = new Set();
+
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    result.push(point);
+    existingTimes.add(point.time);
+
+    if (index >= points.length - 1) {
+      continue;
+    }
+
+    const next = points[index + 1];
+    const price = Number(point.price);
+    const nextPrice = Number(next.price);
+    if (Number.isNaN(price) || Number.isNaN(nextPrice)) {
+      continue;
+    }
+
+    const currentSide = getPriceSide(price, referenceClose);
+    const nextSide = getPriceSide(nextPrice, referenceClose);
+    if (currentSide === 0 || nextSide === 0 || currentSide === nextSide) {
+      continue;
+    }
+
+    const ratio = (referenceClose - price) / (nextPrice - price);
+    const crossingTime = interpolateChartTime(point.time, next.time, ratio);
+    if (existingTimes.has(crossingTime)) {
+      continue;
+    }
+
+    result.push({ time: crossingTime, price: referenceClose });
+    existingTimes.add(crossingTime);
+  }
+
+  return result;
+}
+
+function getChartDatasetFallbackColors(hasPrevClose) {
+  if (hasPrevClose) {
+    const flatColor = getThemeColor("--flat") || "#94a3b8";
+    return {
+      borderColor: flatColor,
+      backgroundColor: colorWithAlpha(flatColor, 0.12),
+    };
+  }
+
+  return null;
 }
 
 function buildFixedTimeAxis(points) {
@@ -1297,9 +1404,18 @@ function renderChart(data, expectedCode = currentCode) {
 
   const chartData = mergeRealtimeClosingPriceIntoChartData(data);
   lastChartData = chartData;
-  const points = chartData.points || [];
+  const rawPoints = chartData.points || [];
   const prevClose = chartData.prev_close;
   const hasPrevClose = prevClose !== null && prevClose !== undefined;
+
+  if (hasPrevClose) {
+    const normalizedPrevClose = Number(prevClose);
+    if (!Number.isNaN(normalizedPrevClose) && normalizedPrevClose !== Number(lastPrevClose)) {
+      lastPrevClose = normalizedPrevClose;
+      refreshPriceDisplay();
+      refreshComparedStats();
+    }
+  }
 
   refreshClosingPriceState();
   if (!hasValue(lastLatestPrice)) {
@@ -1314,7 +1430,7 @@ function renderChart(data, expectedCode = currentCode) {
     ? `昨收 ${Number(prevClose).toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
     : "";
 
-  if (!points.length) {
+  if (!rawPoints.length) {
     if (priceChart) {
       priceChart.destroy();
       priceChart = null;
@@ -1333,8 +1449,11 @@ function renderChart(data, expectedCode = currentCode) {
   updateChartLegendColors();
   setChartMessage("");
 
+  const points = hasPrevClose ? insertPrevCloseCrossings(rawPoints, prevClose) : rawPoints;
   const { labels, prices } = buildFixedTimeAxis(points);
-  const fallbackColors = getChartTrendColors(getLastAvailablePrice(prices), prevClose);
+  const fallbackColors =
+    getChartDatasetFallbackColors(hasPrevClose) ||
+    getChartTrendColors(getLastAvailablePrice(prices), prevClose);
 
   if (priceChart) {
     priceChart.data.labels = labels;
