@@ -150,7 +150,7 @@ def get_intraday_chart(code: str) -> dict:
         _PREV_CLOSE_CACHE[(code, today.isoformat())] = prev_close
     else:
         # metadata 缺值時才 fallback 到 1d 日線
-    prev_close = get_previous_close_for_code(code)
+        prev_close = get_previous_close_for_code(code)
 
     points: list[dict[str, object]] = []
     if not intraday.empty:
