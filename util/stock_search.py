@@ -94,6 +94,10 @@ def _stock_index() -> list[dict[str, str]]:
     return _STOCK_INDEX
 
 
+def get_stock_index() -> list[dict[str, str]]:
+    return _stock_index()
+
+
 def _is_searchable_code(code: str) -> bool:
     info = twstock.codes.get(code)
     return info is not None and info.type in SEARCHABLE_TYPES

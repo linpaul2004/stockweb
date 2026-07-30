@@ -27,6 +27,7 @@ let priceChart = null;
 let lastLatestPrice = null;
 let lastTradeVolume = null;
 let lastPrevClose = null;
+let lastRealtime = null;
 let lastChartData = null;
 let lastDisplayPriceTime = null;
 let hasClosingPrice = false;
@@ -34,8 +35,10 @@ let invertColors = localStorage.getItem("invertColors") !== "false";
 let suggestionResults = [];
 let activeSuggestionIndex = -1;
 let suggestionTimer = null;
-let suggestionRequestId = 0;
 let chartRequestId = 0;
+let stockIndex = [];
+let stockIndexByCode = new Map();
+let stockIndexReady = false;
 
 const SUGGESTION_DEBOUNCE_MS = 200;
 
@@ -455,36 +458,113 @@ function renderSuggestions() {
   stockInput.setAttribute("aria-expanded", "true");
 }
 
-async function fetchSuggestions(query) {
+function normalizeSearchInput(value) {
+  return value.replace(/[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+function resultSortKey(entry) {
+  const market = entry.market;
+  const secType = entry.type;
+
+  let marketRank;
+  if (market.startsWith("上市")) {
+    marketRank = 0;
+  } else if (market === "上櫃") {
+    marketRank = 1;
+  } else {
+    marketRank = 2;
+  }
+
+  let typeRank;
+  if (secType === "股票" || secType === "創新板") {
+    typeRank = 0;
+  } else if (secType === "ETF") {
+    typeRank = 1;
+  } else {
+    typeRank = 2;
+  }
+
+  return [marketRank, typeRank, entry.code];
+}
+
+function matchRank(query, entry) {
+  const name = entry.name;
+  const code = entry.code;
+  const isNumeric = /^\d+$/.test(query);
+  const matchRanks = [];
+
+  if (name === query || code === query) {
+    matchRanks.push(0);
+  }
+  if (name.startsWith(query) || code.startsWith(query)) {
+    matchRanks.push(1);
+  }
+  if (name.includes(query)) {
+    matchRanks.push(isNumeric ? 1 : 2);
+  }
+  if (code.includes(query) && !code.startsWith(query)) {
+    if (isNumeric) {
+      if (!name.includes(query)) {
+        matchRanks.push(2);
+      }
+    } else {
+      matchRanks.push(2);
+    }
+    }
+
+  if (!matchRanks.length) {
+    return null;
+  }
+
+  const [marketRank, typeRank, codeKey] = resultSortKey(entry);
+  return [Math.min(...matchRanks), marketRank, typeRank, codeKey];
+}
+
+function compareMatchRanks(a, b) {
+  for (let index = 0; index < 4; index += 1) {
+    if (a[index] < b[index]) {
+      return -1;
+    }
+    if (a[index] > b[index]) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+function searchStocks(query, limit = 10) {
+  const trimmed = normalizeSearchInput(query.trim());
+  if (!trimmed || !stockIndexReady) {
+    return [];
+  }
+
+  const exact = stockIndexByCode.get(trimmed);
+  if (exact) {
+    return [{ code: trimmed, name: exact.name, market: exact.market }];
+  }
+
+  const ranked = [];
+  for (const entry of stockIndex) {
+    const rank = matchRank(trimmed, entry);
+    if (rank !== null) {
+      ranked.push({ rank, entry });
+    }
+  }
+
+  ranked.sort((left, right) => compareMatchRanks(left.rank, right.rank));
+  return ranked.slice(0, limit).map((item) => item.entry);
+}
+
+function updateSuggestions(query) {
   const trimmed = query.trim();
   if (!trimmed) {
-    hideSuggestions();
-    return;
-  }
-
-  const requestId = ++suggestionRequestId;
-
-  try {
-    const response = await fetch(`/api/search?q=${encodeURIComponent(trimmed)}`);
-    const data = await response.json();
-
-    if (requestId !== suggestionRequestId) {
-      return;
-    }
-
-    if (!response.ok || !data.success) {
       hideSuggestions();
       return;
     }
 
-    suggestionResults = data.results || [];
+  suggestionResults = searchStocks(trimmed);
     activeSuggestionIndex = suggestionResults.length ? 0 : -1;
     renderSuggestions();
-  } catch {
-    if (requestId === suggestionRequestId) {
-      hideSuggestions();
-    }
-  }
 }
 
 function scheduleSuggestionFetch(query) {
@@ -494,14 +574,33 @@ function scheduleSuggestionFetch(query) {
 
   suggestionTimer = setTimeout(() => {
     suggestionTimer = null;
-    fetchSuggestions(query);
+    updateSuggestions(query);
   }, SUGGESTION_DEBOUNCE_MS);
 }
 
+async function loadStockIndex() {
+  try {
+    const response = await fetch("/api/stocks");
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      return;
+    }
+
+    stockIndex = data.stocks || [];
+    stockIndexByCode = new Map(stockIndex.map((entry) => [entry.code, entry]));
+    stockIndexReady = true;
+
+    if (stockInput.value.trim() && document.activeElement === stockInput) {
+      updateSuggestions(stockInput.value);
+    }
+  } catch {
+    stockIndexReady = false;
+  }
+}
+
 function selectSuggestion(item) {
-  stockInput.value = item.code;
-  hideSuggestions();
-  handleSearch();
+  handleSearch(item.code);
 }
 
 function moveSuggestionSelection(direction) {
@@ -526,6 +625,12 @@ function moveSuggestionSelection(direction) {
 
 function initStockAutocomplete() {
   stockInput.addEventListener("input", () => {
+    const { selectionStart, selectionEnd } = stockInput;
+    const normalized = normalizeSearchInput(stockInput.value);
+    if (stockInput.value !== normalized) {
+      stockInput.value = normalized;
+      stockInput.setSelectionRange(selectionStart, selectionEnd);
+    }
     scheduleSuggestionFetch(stockInput.value);
   });
 
@@ -586,6 +691,7 @@ function resetStockDisplayCache() {
   lastLatestPrice = null;
   lastTradeVolume = null;
   lastPrevClose = null;
+  lastRealtime = null;
   lastDisplayPriceTime = null;
   hasClosingPrice = false;
   lastChartData = null;
@@ -636,9 +742,11 @@ function colorWithAlpha(color, alpha) {
 }
 
 function getChartTrendColors(latestPrice, prevClose) {
+  const latestNum = Number(latestPrice);
+  const prevCloseNum = Number(prevClose);
   const changeClass =
-    hasValue(prevClose) && hasValue(latestPrice)
-      ? getChangeClass(latestPrice, prevClose)
+    !Number.isNaN(latestNum) && !Number.isNaN(prevCloseNum)
+      ? getChangeClass(latestNum, prevCloseNum)
       : "flat";
   const cssVar =
     changeClass === "up" ? "--up" : changeClass === "down" ? "--down" : "--flat";
@@ -651,26 +759,25 @@ function getChartTrendColors(latestPrice, prevClose) {
 }
 
 function buildPriceSegmentStyle(prevClose) {
+  const referenceClose = Number(prevClose);
+  const flatColor = getThemeColor("--flat") || "#94a3b8";
+
   return {
     borderColor: (ctx) => {
-      const start = ctx.p0?.parsed?.y;
       const end = ctx.p1?.parsed?.y;
-      if (start == null || end == null) {
-        return undefined;
+      if (end == null || Number.isNaN(referenceClose)) {
+        return flatColor;
       }
 
-      const segmentPrice = (start + end) / 2;
-      return getChartTrendColors(segmentPrice, prevClose).borderColor;
+      return getChartTrendColors(end, referenceClose).borderColor;
     },
     backgroundColor: (ctx) => {
-      const start = ctx.p0?.parsed?.y;
       const end = ctx.p1?.parsed?.y;
-      if (start == null || end == null) {
-        return undefined;
+      if (end == null || Number.isNaN(referenceClose)) {
+        return colorWithAlpha(flatColor, 0.12);
       }
 
-      const segmentPrice = (start + end) / 2;
-      return getChartTrendColors(segmentPrice, prevClose).backgroundColor;
+      return getChartTrendColors(end, referenceClose).backgroundColor;
     },
   };
 }
@@ -874,9 +981,20 @@ function renderOrderBook(realtime) {
   }
 }
 
+function refreshComparedStats() {
+  if (!lastRealtime) {
+    return;
+  }
+
+  setComparedStatValue("display-open", lastRealtime.open);
+  setComparedStatValue("display-high", lastRealtime.high);
+  setComparedStatValue("display-low", lastRealtime.low);
+}
+
 function renderStock(data) {
   const info = data.info || {};
   const realtime = data.realtime || {};
+  lastRealtime = realtime;
   const latest = realtime.latest_trade_price;
   const prevClose = data.prev_close;
 
@@ -959,6 +1077,99 @@ function setChartMessage(message) {
 
   chartMessage.textContent = message;
   chartMessage.classList.remove("hidden");
+}
+
+function chartTimeToMinutes(timeLabel) {
+  const [hour, minute] = timeLabel.split(":").map(Number);
+  return hour * 60 + minute;
+}
+
+function minutesToChartTime(minutes) {
+  const hour = String(Math.floor(minutes / 60)).padStart(2, "0");
+  const minutePart = String(minutes % 60).padStart(2, "0");
+  return `${hour}:${minutePart}`;
+}
+
+function interpolateChartTime(startTime, endTime, ratio) {
+  const startMinutes = chartTimeToMinutes(startTime);
+  const endMinutes = chartTimeToMinutes(endTime);
+  const crossingMinutes = Math.round(startMinutes + ratio * (endMinutes - startMinutes));
+  return minutesToChartTime(crossingMinutes);
+}
+
+function getPriceSide(price, reference) {
+  const priceNum = Number(price);
+  const refNum = Number(reference);
+  if (Number.isNaN(priceNum) || Number.isNaN(refNum)) {
+    return 0;
+  }
+  if (priceNum > refNum) {
+    return 1;
+  }
+  if (priceNum < refNum) {
+    return -1;
+  }
+  return 0;
+}
+
+function insertPrevCloseCrossings(points, prevClose) {
+  if (!hasValue(prevClose) || points.length < 2) {
+    return points;
+  }
+
+  const referenceClose = Number(prevClose);
+  if (Number.isNaN(referenceClose)) {
+    return points;
+  }
+
+  const result = [];
+  const existingTimes = new Set();
+
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    result.push(point);
+    existingTimes.add(point.time);
+
+    if (index >= points.length - 1) {
+      continue;
+    }
+
+    const next = points[index + 1];
+    const price = Number(point.price);
+    const nextPrice = Number(next.price);
+    if (Number.isNaN(price) || Number.isNaN(nextPrice)) {
+      continue;
+    }
+
+    const currentSide = getPriceSide(price, referenceClose);
+    const nextSide = getPriceSide(nextPrice, referenceClose);
+    if (currentSide === 0 || nextSide === 0 || currentSide === nextSide) {
+      continue;
+    }
+
+    const ratio = (referenceClose - price) / (nextPrice - price);
+    const crossingTime = interpolateChartTime(point.time, next.time, ratio);
+    if (existingTimes.has(crossingTime)) {
+      continue;
+    }
+
+    result.push({ time: crossingTime, price: referenceClose });
+    existingTimes.add(crossingTime);
+  }
+
+  return result;
+}
+
+function getChartDatasetFallbackColors(hasPrevClose) {
+  if (hasPrevClose) {
+    const flatColor = getThemeColor("--flat") || "#94a3b8";
+    return {
+      borderColor: flatColor,
+      backgroundColor: colorWithAlpha(flatColor, 0.12),
+    };
+  }
+
+  return null;
 }
 
 function buildFixedTimeAxis(points) {
@@ -1193,9 +1404,18 @@ function renderChart(data, expectedCode = currentCode) {
 
   const chartData = mergeRealtimeClosingPriceIntoChartData(data);
   lastChartData = chartData;
-  const points = chartData.points || [];
+  const rawPoints = chartData.points || [];
   const prevClose = chartData.prev_close;
   const hasPrevClose = prevClose !== null && prevClose !== undefined;
+
+  if (hasPrevClose) {
+    const normalizedPrevClose = Number(prevClose);
+    if (!Number.isNaN(normalizedPrevClose) && normalizedPrevClose !== Number(lastPrevClose)) {
+      lastPrevClose = normalizedPrevClose;
+      refreshPriceDisplay();
+      refreshComparedStats();
+    }
+  }
 
   refreshClosingPriceState();
   if (!hasValue(lastLatestPrice)) {
@@ -1210,7 +1430,7 @@ function renderChart(data, expectedCode = currentCode) {
     ? `昨收 ${Number(prevClose).toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
     : "";
 
-  if (!points.length) {
+  if (!rawPoints.length) {
     if (priceChart) {
       priceChart.destroy();
       priceChart = null;
@@ -1229,8 +1449,11 @@ function renderChart(data, expectedCode = currentCode) {
   updateChartLegendColors();
   setChartMessage("");
 
+  const points = hasPrevClose ? insertPrevCloseCrossings(rawPoints, prevClose) : rawPoints;
   const { labels, prices } = buildFixedTimeAxis(points);
-  const fallbackColors = getChartTrendColors(getLastAvailablePrice(prices), prevClose);
+  const fallbackColors =
+    getChartDatasetFallbackColors(hasPrevClose) ||
+    getChartTrendColors(getLastAvailablePrice(prices), prevClose);
 
   if (priceChart) {
     priceChart.data.labels = labels;
@@ -1571,7 +1794,11 @@ async function fetchStock(code, manual = true) {
 
     const resolvedCode = data.info?.code || normalizedCode;
     currentCode = resolvedCode;
-    stockInput.value = resolvedCode;
+
+    if (manual) {
+      stockInput.value = "";
+      hideSuggestions();
+    }
 
     renderStock(data);
     handleMarketStateAfterUpdate(resolvedCode);
@@ -1598,14 +1825,14 @@ async function fetchStock(code, manual = true) {
   }
 }
 
-function handleSearch() {
+function handleSearch(code) {
   hideSuggestions();
   document.getElementById("display-trade-volume").textContent = "—";
   document.getElementById("display-accum-volume").textContent = "—";
   document.getElementById("display-open").textContent = "—";
   document.getElementById("display-high").textContent = "—";
   document.getElementById("display-low").textContent = "—";
-  fetchStock(stockInput.value, true);
+  fetchStock(normalizeSearchInput((code ?? stockInput.value).trim()), true);
 }
 
 document.getElementById('stock-code').addEventListener('focus', function () {
@@ -1614,6 +1841,7 @@ document.getElementById('stock-code').addEventListener('focus', function () {
 
 searchBtn.addEventListener("click", handleSearch);
 
+loadStockIndex();
 fetchStock(defaultStock, true);
 initColorToggle();
 initStockAutocomplete();
