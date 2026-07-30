@@ -625,12 +625,6 @@ function moveSuggestionSelection(direction) {
 
 function initStockAutocomplete() {
   stockInput.addEventListener("input", () => {
-    const { selectionStart, selectionEnd } = stockInput;
-    const normalized = normalizeSearchInput(stockInput.value);
-    if (stockInput.value !== normalized) {
-      stockInput.value = normalized;
-      stockInput.setSelectionRange(selectionStart, selectionEnd);
-    }
     scheduleSuggestionFetch(stockInput.value);
   });
 
@@ -1835,7 +1829,7 @@ function handleSearch(code) {
   fetchStock(normalizeSearchInput((code ?? stockInput.value).trim()), true);
 }
 
-document.getElementById('stock-code').addEventListener('focus', function () {
+stockInput.addEventListener('focus', function () {
   this.select();
 });
 
