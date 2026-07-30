@@ -70,6 +70,7 @@ def _get_previous_close_from_yf(code: str, today) -> float | None:
 
 
 def get_previous_close_for_code(code: str) -> float | None:
+    """供 /api/stock 使用；走勢圖載入後會寫入快取，否則查 1d 日線。"""
     today = datetime.now(TZ).date()
     cache_key = (code, today.isoformat())
 
@@ -139,8 +140,16 @@ def get_intraday_chart(code: str) -> dict:
     symbol = yfinance_symbol(code)
     today = datetime.now(TZ).date()
     ticker = _get_ticker(symbol)
-
+    # history() 回傳分鐘 K 線 DataFrame，並在同一次回應的 history_metadata 附帶昨收
     intraday = ticker.history(period="1d", interval="1m", auto_adjust=False)
+    raw_prev_close = (getattr(ticker, "history_metadata", None) or {}).get(
+        "chartPreviousClose"
+    )
+    if raw_prev_close is not None:
+        prev_close = round(float(raw_prev_close), 4)
+        _PREV_CLOSE_CACHE[(code, today.isoformat())] = prev_close
+    else:
+        # metadata 缺值時才 fallback 到 1d 日線
     prev_close = get_previous_close_for_code(code)
 
     points: list[dict[str, object]] = []
