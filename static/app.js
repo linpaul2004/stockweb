@@ -34,8 +34,10 @@ let invertColors = localStorage.getItem("invertColors") !== "false";
 let suggestionResults = [];
 let activeSuggestionIndex = -1;
 let suggestionTimer = null;
-let suggestionRequestId = 0;
 let chartRequestId = 0;
+let stockIndex = [];
+let stockIndexByCode = new Map();
+let stockIndexReady = false;
 
 const SUGGESTION_DEBOUNCE_MS = 200;
 
@@ -455,36 +457,113 @@ function renderSuggestions() {
   stockInput.setAttribute("aria-expanded", "true");
 }
 
-async function fetchSuggestions(query) {
+function normalizeSearchInput(value) {
+  return value.replace(/[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+function resultSortKey(entry) {
+  const market = entry.market;
+  const secType = entry.type;
+
+  let marketRank;
+  if (market.startsWith("上市")) {
+    marketRank = 0;
+  } else if (market === "上櫃") {
+    marketRank = 1;
+  } else {
+    marketRank = 2;
+  }
+
+  let typeRank;
+  if (secType === "股票" || secType === "創新板") {
+    typeRank = 0;
+  } else if (secType === "ETF") {
+    typeRank = 1;
+  } else {
+    typeRank = 2;
+  }
+
+  return [marketRank, typeRank, entry.code];
+}
+
+function matchRank(query, entry) {
+  const name = entry.name;
+  const code = entry.code;
+  const isNumeric = /^\d+$/.test(query);
+  const matchRanks = [];
+
+  if (name === query || code === query) {
+    matchRanks.push(0);
+  }
+  if (name.startsWith(query) || code.startsWith(query)) {
+    matchRanks.push(1);
+  }
+  if (name.includes(query)) {
+    matchRanks.push(isNumeric ? 1 : 2);
+  }
+  if (code.includes(query) && !code.startsWith(query)) {
+    if (isNumeric) {
+      if (!name.includes(query)) {
+        matchRanks.push(2);
+      }
+    } else {
+      matchRanks.push(2);
+    }
+    }
+
+  if (!matchRanks.length) {
+    return null;
+  }
+
+  const [marketRank, typeRank, codeKey] = resultSortKey(entry);
+  return [Math.min(...matchRanks), marketRank, typeRank, codeKey];
+}
+
+function compareMatchRanks(a, b) {
+  for (let index = 0; index < 4; index += 1) {
+    if (a[index] < b[index]) {
+      return -1;
+    }
+    if (a[index] > b[index]) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+function searchStocks(query, limit = 10) {
+  const trimmed = normalizeSearchInput(query.trim());
+  if (!trimmed || !stockIndexReady) {
+    return [];
+  }
+
+  const exact = stockIndexByCode.get(trimmed);
+  if (exact) {
+    return [{ code: trimmed, name: exact.name, market: exact.market }];
+  }
+
+  const ranked = [];
+  for (const entry of stockIndex) {
+    const rank = matchRank(trimmed, entry);
+    if (rank !== null) {
+      ranked.push({ rank, entry });
+    }
+  }
+
+  ranked.sort((left, right) => compareMatchRanks(left.rank, right.rank));
+  return ranked.slice(0, limit).map((item) => item.entry);
+}
+
+function updateSuggestions(query) {
   const trimmed = query.trim();
   if (!trimmed) {
-    hideSuggestions();
-    return;
-  }
-
-  const requestId = ++suggestionRequestId;
-
-  try {
-    const response = await fetch(`/api/search?q=${encodeURIComponent(trimmed)}`);
-    const data = await response.json();
-
-    if (requestId !== suggestionRequestId) {
-      return;
-    }
-
-    if (!response.ok || !data.success) {
       hideSuggestions();
       return;
     }
 
-    suggestionResults = data.results || [];
+  suggestionResults = searchStocks(trimmed);
     activeSuggestionIndex = suggestionResults.length ? 0 : -1;
     renderSuggestions();
-  } catch {
-    if (requestId === suggestionRequestId) {
-      hideSuggestions();
-    }
-  }
 }
 
 function scheduleSuggestionFetch(query) {
@@ -494,14 +573,33 @@ function scheduleSuggestionFetch(query) {
 
   suggestionTimer = setTimeout(() => {
     suggestionTimer = null;
-    fetchSuggestions(query);
+    updateSuggestions(query);
   }, SUGGESTION_DEBOUNCE_MS);
 }
 
+async function loadStockIndex() {
+  try {
+    const response = await fetch("/api/stocks");
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      return;
+    }
+
+    stockIndex = data.stocks || [];
+    stockIndexByCode = new Map(stockIndex.map((entry) => [entry.code, entry]));
+    stockIndexReady = true;
+
+    if (stockInput.value.trim() && document.activeElement === stockInput) {
+      updateSuggestions(stockInput.value);
+    }
+  } catch {
+    stockIndexReady = false;
+  }
+}
+
 function selectSuggestion(item) {
-  stockInput.value = item.code;
-  hideSuggestions();
-  handleSearch();
+  handleSearch(item.code);
 }
 
 function moveSuggestionSelection(direction) {
@@ -526,6 +624,12 @@ function moveSuggestionSelection(direction) {
 
 function initStockAutocomplete() {
   stockInput.addEventListener("input", () => {
+    const { selectionStart, selectionEnd } = stockInput;
+    const normalized = normalizeSearchInput(stockInput.value);
+    if (stockInput.value !== normalized) {
+      stockInput.value = normalized;
+      stockInput.setSelectionRange(selectionStart, selectionEnd);
+    }
     scheduleSuggestionFetch(stockInput.value);
   });
 
@@ -1571,7 +1675,11 @@ async function fetchStock(code, manual = true) {
 
     const resolvedCode = data.info?.code || normalizedCode;
     currentCode = resolvedCode;
-    stockInput.value = resolvedCode;
+
+    if (manual) {
+      stockInput.value = "";
+      hideSuggestions();
+    }
 
     renderStock(data);
     handleMarketStateAfterUpdate(resolvedCode);
@@ -1598,14 +1706,14 @@ async function fetchStock(code, manual = true) {
   }
 }
 
-function handleSearch() {
+function handleSearch(code) {
   hideSuggestions();
   document.getElementById("display-trade-volume").textContent = "—";
   document.getElementById("display-accum-volume").textContent = "—";
   document.getElementById("display-open").textContent = "—";
   document.getElementById("display-high").textContent = "—";
   document.getElementById("display-low").textContent = "—";
-  fetchStock(stockInput.value, true);
+  fetchStock(normalizeSearchInput((code ?? stockInput.value).trim()), true);
 }
 
 document.getElementById('stock-code').addEventListener('focus', function () {
@@ -1614,6 +1722,7 @@ document.getElementById('stock-code').addEventListener('focus', function () {
 
 searchBtn.addEventListener("click", handleSearch);
 
+loadStockIndex();
 fetchStock(defaultStock, true);
 initColorToggle();
 initStockAutocomplete();

@@ -65,7 +65,7 @@ Cloud Run sets `PORT=8080`; the container starts `gunicorn` automatically.
 | `GET /` | Web UI |
 | `GET /api/stock?code=0050` | Real-time stock data |
 | `GET /api/chart?code=0050` | Intraday chart data |
-| `GET /api/search?q=50`     | Search stock |
+| `GET /api/stocks`          | Full searchable stock list |
 
 ## Project structure
 

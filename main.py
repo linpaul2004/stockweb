@@ -6,7 +6,7 @@ from flask import Flask, jsonify, render_template, request
 import twstock
 
 from util.chart import get_intraday_chart, get_previous_close_for_code
-from util.stock_search import resolve_stock_code, search_stocks
+from util.stock_search import get_stock_index, resolve_stock_code
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
@@ -21,13 +21,9 @@ def index():
     return render_template("index.html", default_stock=DEFAULT_STOCK, refresh_seconds=REFRESH_SECONDS)
 
 
-@app.route("/api/search")
-def search_stock():
-    query = request.args.get("q", "").strip()
-    if not query:
-        return jsonify({"success": True, "results": []})
-
-    return jsonify({"success": True, "results": search_stocks(query)})
+@app.route("/api/stocks")
+def list_stocks():
+    return jsonify({"success": True, "stocks": get_stock_index()})
 
 
 @app.route("/api/stock")
