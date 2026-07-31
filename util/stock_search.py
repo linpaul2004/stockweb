@@ -1,22 +1,13 @@
 import twstock
-
-INDEX_ENTRIES: dict[str, dict[str, str]] = {
-    "^TWII": {
-        "code": "^TWII",
-        "name": "加權指數",
-        "full_name": "發行量加權股價指數",
-        "market": "指數",
-        "type": "指數",
-    },
-}
-
-INDEX_CODES = frozenset(INDEX_ENTRIES.keys())
+from util.index_entries import INDEX_ENTRIES, IndexEntry
+from itertools import chain
 
 SEARCHABLE_TYPES = frozenset(
     {
         "股票",
         "ETF",
         "創新板",
+        "指數",
         # "特別股",
         # "ETN",
         # "臺灣存託憑證(TDR)",
@@ -28,16 +19,7 @@ _STOCK_INDEX: list[dict[str, str]] = []
 
 def _build_stock_index() -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
-    for code, info in INDEX_ENTRIES.items():
-        entries.append(
-            {
-                "code": code,
-                "name": info["name"],
-                "market": info["market"],
-                "type": info["type"],
-            }
-        )
-    for code, info in twstock.codes.items():
+    for code, info in chain(INDEX_ENTRIES.items(), twstock.codes.items()):
         if info.type not in SEARCHABLE_TYPES:
             continue
         entries.append(
@@ -59,10 +41,10 @@ def get_stock_index() -> list[dict[str, str]]:
 
 
 def is_index_code(code: str) -> bool:
-    return code in INDEX_CODES
+    return code in INDEX_ENTRIES
 
 
-def get_index_entry(code: str) -> dict[str, str] | None:
+def get_index_entry(code: str) -> IndexEntry | None:
     return INDEX_ENTRIES.get(code)
 
 

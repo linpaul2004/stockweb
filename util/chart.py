@@ -6,7 +6,7 @@ import twstock
 import yfinance as yf
 from curl_cffi import requests as curl_requests
 
-from util.stock_search import is_index_code
+from util.stock_search import get_index_entry
 
 TZ = ZoneInfo("Asia/Taipei")
 PRE_MARKET_OPEN = time(8, 30)
@@ -16,8 +16,8 @@ _PREV_CLOSE_CACHE: dict[tuple[str, str], float] = {}
 
 
 def yfinance_symbol(code: str) -> str:
-    if is_index_code(code):
-        return code
+    if (entry := get_index_entry(code)) is not None:
+        return entry.code
     suffix = "TW" if code in twstock.twse else "TWO"
     return f"{code}.{suffix}"
 
@@ -147,13 +147,10 @@ def _normalize_chart_points(raw_points: list[dict[str, object]]) -> list[dict[st
 
 
 def get_index_realtime(code: str) -> dict:
-    from util.stock_search import get_index_entry
-
-    entry = get_index_entry(code)
-    if entry is None:
+    if (entry := get_index_entry(code)) is None:
         return {"success": False, "message": "未知的指數代號"}
 
-    symbol = yfinance_symbol(code)
+    symbol = entry.code # yfinance code for the index
     ticker = _get_ticker(symbol)
     fast_info = dict(getattr(ticker, "fast_info", {}))
 
@@ -184,8 +181,8 @@ def get_index_realtime(code: str) -> dict:
         "info": {
             "code": code,
             "channel": symbol,
-            "name": entry["name"],
-            "fullname": entry["full_name"],
+            "name": entry.name,
+            "fullname": entry.full_name,
             "time": quote_time.strftime("%Y-%m-%d %H:%M:%S"),
         },
         "realtime": {
