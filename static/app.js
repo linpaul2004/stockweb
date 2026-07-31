@@ -532,6 +532,35 @@ function compareMatchRanks(a, b) {
   return 0;
 }
 
+const MAX_FUZZY_MATCHES = 3;
+function resolveManualSearchQuery(query) {
+  if (!stockIndexReady) {
+    return { code: query };
+  }
+
+  if (stockIndexByCode.has(query)) {
+    return { code: query };
+  }
+
+  const matches = searchStocks(query, MAX_FUZZY_MATCHES + 1);
+  if (!matches.length) {
+    return { error: `找不到符合「${query}」的股票` };
+  }
+
+  if (matches.length === 1 || matches[0].name === query) {
+    return { code: matches[0].code };
+  }
+
+  const options = matches
+    .slice(0, MAX_FUZZY_MATCHES)
+    .map((match) => `${match.code} ${match.name}`)
+    .join("、");
+  const suffix = matches.length > MAX_FUZZY_MATCHES ? "…" : "";
+  return {
+    error: `找到多筆符合結果，請輸入更精確的名稱或代號：${options}${suffix}`,
+  };
+}
+
 function searchStocks(query, limit = 10) {
   const trimmed = normalizeSearchInput(query.trim());
   if (!trimmed || !stockIndexReady) {
@@ -600,7 +629,7 @@ async function loadStockIndex() {
 }
 
 function selectSuggestion(item) {
-  handleSearch(item.code);
+  handleSearch(item.code, true);
 }
 
 function moveSuggestionSelection(direction) {
@@ -1714,6 +1743,13 @@ function showError(message) {
   stockPanel.classList.add("hidden");
 }
 
+function showSearchError(message) {
+  stopAllRefresh();
+  showError(message);
+  statusText.textContent = "查詢失敗";
+  countdownWrap.classList.add("hidden");
+}
+
 function resetCountdown() {
   countdown = refreshSeconds;
   countdownEl.textContent = String(countdown);
@@ -1750,7 +1786,7 @@ function startCountdown() {
 async function fetchStock(code, manual = true) {
   const normalizedCode = code.trim();
   if (!normalizedCode) {
-    showError("請輸入股票代號或公司名稱");
+    showSearchError("請輸入股票代號或公司名稱");
     return;
   }
 
@@ -1804,36 +1840,44 @@ async function fetchStock(code, manual = true) {
       }
     }
   } catch (error) {
-    showError(error.message || "查詢失敗，請稍後再試");
-
-    if (shouldContinueRealtimeRefresh()) {
-      statusText.textContent = "查詢失敗";
-      resetCountdown();
-      startCountdown();
-    } else {
-      stopAllRefresh();
-      setMarketClosedStatus(normalizedCode);
-    }
+    showSearchError(error.message || "查詢失敗，請稍後再試");
   } finally {
     isFetching = false;
   }
 }
 
-function handleSearch(code) {
+function handleSearch(code, fromSuggestion = false) {
   hideSuggestions();
+  const query = normalizeSearchInput((code ?? stockInput.value).trim());
+
+  if (!query) {
+    showSearchError("請輸入股票代號或公司名稱");
+    return;
+  }
+
+  let searchCode = query;
+  if (!fromSuggestion) {
+    const resolved = resolveManualSearchQuery(query);
+    if (resolved.error) {
+      showSearchError(resolved.error);
+      return;
+    }
+    searchCode = resolved.code;
+  }
+
   document.getElementById("display-trade-volume").textContent = "—";
   document.getElementById("display-accum-volume").textContent = "—";
   document.getElementById("display-open").textContent = "—";
   document.getElementById("display-high").textContent = "—";
   document.getElementById("display-low").textContent = "—";
-  fetchStock(normalizeSearchInput((code ?? stockInput.value).trim()), true);
+  fetchStock(searchCode, true);
 }
 
 stockInput.addEventListener('focus', function () {
   this.select();
 });
 
-searchBtn.addEventListener("click", handleSearch);
+searchBtn.addEventListener("click", () => handleSearch());
 
 loadStockIndex();
 fetchStock(defaultStock, true);
