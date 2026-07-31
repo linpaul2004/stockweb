@@ -6,6 +6,8 @@ import twstock
 import yfinance as yf
 from curl_cffi import requests as curl_requests
 
+from util.stock_search import is_index_code
+
 TZ = ZoneInfo("Asia/Taipei")
 PRE_MARKET_OPEN = time(8, 30)
 MARKET_OPEN = time(9, 0)
@@ -14,8 +16,16 @@ _PREV_CLOSE_CACHE: dict[tuple[str, str], float] = {}
 
 
 def yfinance_symbol(code: str) -> str:
+    if is_index_code(code):
+        return code
     suffix = "TW" if code in twstock.twse else "TWO"
     return f"{code}.{suffix}"
+
+
+def _format_quote_price(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.4f}"
 
 
 def _create_session() -> curl_requests.Session:
@@ -58,17 +68,6 @@ def _previous_close_from_daily(daily: pd.DataFrame, today) -> float | None:
     return float(close.iloc[-1])
 
 
-def _get_previous_close_from_yf(code: str, today) -> float | None:
-    symbol = yfinance_symbol(code)
-    daily = _get_ticker(symbol).history(
-        period="10d",
-        interval="1d",
-        auto_adjust=False,
-    )
-    prev_close = _previous_close_from_daily(daily, today)
-    return round(prev_close, 4) if prev_close is not None else None
-
-
 def get_previous_close_for_code(code: str) -> float | None:
     """供 /api/stock 使用；走勢圖載入後會寫入快取，否則查 1d 日線。"""
     today = datetime.now(TZ).date()
@@ -77,12 +76,23 @@ def get_previous_close_for_code(code: str) -> float | None:
     if cache_key in _PREV_CLOSE_CACHE:
         return _PREV_CLOSE_CACHE[cache_key]
 
-    rounded_prev_close = _get_previous_close_from_yf(code, today)
+    symbol = yfinance_symbol(code)
+    rounded_prev_close = _get_previous_close_from_yf(symbol, today)
 
     if rounded_prev_close is not None:
         _PREV_CLOSE_CACHE[cache_key] = rounded_prev_close
 
     return rounded_prev_close
+
+
+def _get_previous_close_from_yf(symbol: str, today) -> float | None:
+    daily = _get_ticker(symbol).history(
+        period="10d",
+        interval="1d",
+        auto_adjust=False,
+    )
+    prev_close = _previous_close_from_daily(daily, today)
+    return round(prev_close, 4) if prev_close is not None else None
 
 
 def _y_axis_bounds(prev_close: float, prices: list[float]) -> tuple[float, float]:
@@ -134,6 +144,64 @@ def _normalize_chart_points(raw_points: list[dict[str, object]]) -> list[dict[st
         normalized.append({"time": "13:30", "price": round(closing_price, 4)})
 
     return normalized
+
+
+def get_index_realtime(code: str) -> dict:
+    from util.stock_search import get_index_entry
+
+    entry = get_index_entry(code)
+    if entry is None:
+        return {"success": False, "message": "未知的指數代號"}
+
+    symbol = yfinance_symbol(code)
+    ticker = _get_ticker(symbol)
+    fast_info = dict(getattr(ticker, "fast_info", {}))
+
+    latest = fast_info.get("lastPrice")
+    open_price = fast_info.get("open")
+    high_price = fast_info.get("dayHigh")
+    low_price = fast_info.get("dayLow")
+    prev_close = fast_info.get("regularMarketPreviousClose") or fast_info.get(
+        "previousClose"
+    )
+
+    quote_time = datetime.now(TZ)
+    intraday = ticker.history(period="1d", interval="1m", auto_adjust=False)
+    if not intraday.empty:
+        close = _series(intraday, "Close").dropna()
+        if not close.empty:
+            latest = float(close.iloc[-1])
+            quote_time = _to_local(close.index[-1])
+
+    if prev_close is not None:
+        prev_close = round(float(prev_close), 4)
+        _PREV_CLOSE_CACHE[(code, quote_time.date().isoformat())] = prev_close
+
+    timestamp = quote_time.timestamp()
+    return {
+        "success": True,
+        "timestamp": timestamp,
+        "info": {
+            "code": code,
+            "channel": symbol,
+            "name": entry["name"],
+            "fullname": entry["full_name"],
+            "time": quote_time.strftime("%Y-%m-%d %H:%M:%S"),
+        },
+        "realtime": {
+            "latest_trade_price": _format_quote_price(latest),
+            "trade_volume": "N/A",
+            "accumulate_trade_volume": "N/A",
+            "best_bid_price": [],
+            "best_bid_volume": [],
+            "best_ask_price": [],
+            "best_ask_volume": [],
+            "open": _format_quote_price(open_price),
+            "high": _format_quote_price(high_price),
+            "low": _format_quote_price(low_price),
+        },
+        "prev_close": prev_close,
+    }
 
 
 def get_intraday_chart(code: str) -> dict:

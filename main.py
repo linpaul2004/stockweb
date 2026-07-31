@@ -5,13 +5,13 @@ from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, render_template, request
 import twstock
 
-from util.chart import get_intraday_chart, get_previous_close_for_code
-from util.stock_search import get_stock_index, resolve_stock_code
+from util.chart import get_index_realtime, get_intraday_chart, get_previous_close_for_code
+from util.stock_search import get_stock_index, is_index_code, is_valid_code
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
 
-DEFAULT_STOCK = "0050"
+DEFAULT_STOCK = "^TWII"
 REFRESH_SECONDS = 3
 TZ_TAIPEI = ZoneInfo("Asia/Taipei")
 
@@ -28,13 +28,27 @@ def list_stocks():
 
 @app.route("/api/stock")
 def get_stock():
-    raw_query = request.args.get("code", DEFAULT_STOCK).strip()
-    if not raw_query:
-        return jsonify({"success": False, "message": "請輸入股票代號或公司名稱"}), 400
+    code = request.args.get("code", DEFAULT_STOCK).strip()
+    if not code:
+        return jsonify({"success": False, "message": "請輸入股票代號"}), 400
+    if not is_valid_code(code):
+        return jsonify({"success": False, "message": f"找不到代號「{code}」"}), 400
 
-    code, error_message = resolve_stock_code(raw_query)
-    if error_message:
-        return jsonify({"success": False, "message": error_message}), 400
+    if is_index_code(code):
+        try:
+            data = get_index_realtime(code)
+        except Exception as exc:
+            return jsonify({"success": False, "message": f"無法取得指數資料：{exc}"}), 500
+
+        if not data.get("success"):
+            return jsonify(data), 400
+
+        timestamp = data.get("timestamp")
+        if timestamp:
+            data["info"]["time"] = datetime.fromtimestamp(timestamp, TZ_TAIPEI).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        return jsonify(data)
 
     data = twstock.realtime.get(code)
     if not data.get("success"):
@@ -61,13 +75,11 @@ def get_stock():
 
 @app.route("/api/chart")
 def get_chart():
-    raw_query = request.args.get("code", DEFAULT_STOCK).strip()
-    if not raw_query:
-        return jsonify({"success": False, "message": "請輸入股票代號或公司名稱"}), 400
-
-    code, error_message = resolve_stock_code(raw_query)
-    if error_message:
-        return jsonify({"success": False, "message": error_message}), 400
+    code = request.args.get("code", DEFAULT_STOCK).strip()
+    if not code:
+        return jsonify({"success": False, "message": "請輸入股票代號"}), 400
+    if not is_valid_code(code):
+        return jsonify({"success": False, "message": f"找不到代號「{code}」"}), 400
 
     try:
         return jsonify(get_intraday_chart(code))
