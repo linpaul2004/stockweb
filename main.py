@@ -11,7 +11,7 @@ from util.stock_search import get_stock_index, is_index_code, is_valid_code
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
 
-DEFAULT_STOCK = "^TWII"
+DEFAULT_STOCK = "TAIEX"
 REFRESH_SECONDS = 3
 TZ_TAIPEI = ZoneInfo("Asia/Taipei")
 
